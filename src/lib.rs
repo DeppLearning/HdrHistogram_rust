@@ -208,6 +208,8 @@ use std::ops::{AddAssign, SubAssign};
 
 use iterators::HistogramIterator;
 
+pub mod doublehist;
+
 /// Min value of a new histogram.
 /// Equivalent to `u64::max_value()`, but const functions aren't allowed (yet).
 /// See <https://github.com/rust-lang/rust/issues/24111>
@@ -250,10 +252,10 @@ const ORIGINAL_MAX: u64 = 0;
 ///
 #[derive(Debug)]
 pub struct Histogram<T: Counter> {
-    auto_resize: bool,
+    pub (crate) auto_resize: bool,
 
     // >= 2 * lowest_discernible_value
-    highest_trackable_value: u64,
+    pub (crate) highest_trackable_value: u64,
     // >= 1
     lowest_discernible_value: u64,
     // in [0, 5]
@@ -262,7 +264,7 @@ pub struct Histogram<T: Counter> {
     // in [1, 64]
     bucket_count: u8,
     // 2^(sub_bucket_half_count_magnitude + 1) = [2, 2^18]
-    sub_bucket_count: u32,
+    pub (crate) sub_bucket_count: u32,
     // sub_bucket_count / 2 = [1, 2^17]
     sub_bucket_half_count: u32,
     // In [0, 17]
@@ -285,6 +287,7 @@ pub struct Histogram<T: Counter> {
 
     total_count: u64,
     counts: Vec<T>,
+    normalizing_index_offset: u64,
 }
 
 /// Module containing the implementations of all `Histogram` iterators.
@@ -788,6 +791,7 @@ impl<T: Counter> Histogram<T> {
             total_count: 0,
             // set by alloc() below
             counts: Vec::new(),
+            normalizing_index_offset: 0,
         };
 
         // Already checked that high >= 2*low
@@ -1686,6 +1690,187 @@ impl<T: Counter> Histogram<T> {
         }
 
         restat_state.update_histogram(self);
+    }
+
+    fn shift_values_right(&mut self, number_of_binary_orders_of_magnitude: u8, new_integer_to_double_value_conversion_ratio: f64) -> Result<(), RecordError>  {
+        if (number_of_binary_orders_of_magnitude < 0) {
+            return Err(RecordError::ResizeFailedUsizeTypeTooSmall);
+        }
+        if (number_of_binary_orders_of_magnitude == 0) {
+            return Ok(());
+        }
+        if self.len() == self.count_at_index(0).unwrap().as_u64() {
+            // (no need to shift any values if all recorded values are at the 0 value level:)
+            return Ok(());
+        }
+
+        let shift_amount = number_of_binary_orders_of_magnitude << self.sub_bucket_half_count_magnitude;
+        let max_value_index = self.counts_array_index_for(self.max_value)?;
+        // indicate overflow if maxValue is in the range being wrapped:
+        if max_value_index >= (self.counts.len() - shift_amount as usize) {
+            return Err(RecordError::ResizeFailedUsizeTypeTooSmall);
+        }
+
+        let max_value_before_shift: u64 = self.max_value;
+        self.max_value = 0;
+        let min_non_zero_value_before_shift = self.min_non_zero_value;
+        self.min_non_zero_value = std::u64::MAX;
+
+        let lowest_half_bucket_populated: bool = (min_non_zero_value_before_shift < (self.sub_bucket_half_count << self.unit_magnitude) as u64);
+        
+        // perform shift
+        
+
+        // Perform the shift:
+        self.non_concurrent_normalizing_index_shift(shift_amount, lowest_half_bucket_populated)?;
+
+        // adjust min, max:
+        self.update_min_max(max_value_before_shift << number_of_binary_orders_of_magnitude);
+        if min_non_zero_value_before_shift < std::u64::MAX {
+            self.update_min_max(min_non_zero_value_before_shift << number_of_binary_orders_of_magnitude);
+        }
+        Ok(())
+    }
+
+
+
+    fn shift_values_left(&mut self, number_of_binary_orders_of_magnitude: u8, new_integer_to_double_value_conversion_ratio: f64) -> Result<(), RecordError> {
+        if number_of_binary_orders_of_magnitude < 0 {
+            // TODO new error variant
+            return Err(RecordError::ResizeFailedUsizeTypeTooSmall)
+        }
+        if number_of_binary_orders_of_magnitude == 0 {
+            return Ok(());
+        }
+        if self.len() == self.count_at_index(0).unwrap().as_u64() {
+            return Ok(())
+        }
+
+        let shift_amount: u8 = number_of_binary_orders_of_magnitude << self.sub_bucket_half_count_magnitude;
+        let max_value_index = self.counts_array_index_for(self.max_value)?;
+        if max_value_index >= self.counts.len() - shift_amount as usize{
+            return Err(RecordError::ValueOutOfRangeResizeDisabled);
+        }
+
+        let max_value_before_shift: u64 = self.max_value;
+        let min_non_zero_value_before_shift: u64 = self.min_non_zero_value;
+        self.max_value = 0;
+        self.min_non_zero_value = u64::MAX;
+
+        let lowest_half_bucket_populated: bool = min_non_zero_value_before_shift < (self.sub_bucket_half_count << self.unit_magnitude) as u64;
+        
+        // Perform the shift:
+        self.non_concurrent_normalizing_index_shift(shift_amount, lowest_half_bucket_populated);
+        self.update_min_max(max_value_before_shift << number_of_binary_orders_of_magnitude);
+        if min_non_zero_value_before_shift < u64::MAX {
+            self.update_min_max(min_non_zero_value_before_shift << number_of_binary_orders_of_magnitude);
+        }
+
+        Ok(())
+
+    }
+
+    fn non_concurrent_normalizing_index_shift(&mut self, shift_amount: u8, lowest_half_bucket_populated: bool) -> Result<(), RecordError> {
+        let zero_value_count: T = self.count_at_index(0).unwrap();
+        self.set_count_at_index(0, T::zero());
+        let pre_shift_zero_index = Self::normalize_index(0, self.normalizing_index_offset, self.counts.len()).unwrap();
+        self.normalizing_index_offset += shift_amount as u64;
+        if lowest_half_bucket_populated {
+            if shift_amount <= 0 {
+                 // Shifts with lowest half bucket populated can only be to the left.
+                // Any right shift logic calling this should have already verified that
+                // the lowest half bucket is not populated.
+                return Err(RecordError::ResizeFailedUsizeTypeTooSmall);
+            }
+            self.shift_lowest_half_bucket_contents_left(shift_amount, pre_shift_zero_index);
+            
+        }
+        // Restore the 0 value count:
+        self.set_count_at_index(0, zero_value_count);
+        Ok(())
+
+    }
+
+    fn shift_lowest_half_bucket_contents_left(&mut self, shift_amount: u8, pre_shift_zero_index: usize) -> Result<(), RecordError> {
+        let number_of_binary_orders_of_magnitude: u8 = shift_amount >> self.sub_bucket_half_count_magnitude;
+        
+        // The lowest half-bucket (not including the 0 value) is special: unlike all other half
+        // buckets, the lowest half bucket values cannot be scaled by simply changing the
+        // normalizing offset. Instead, they must be individually re-recorded at the new
+        // scale, and cleared from the current one.
+        //
+        // We know that all half buckets "below" the current lowest one are full of 0s, because
+        // we would have overflowed otherwise. So we need to shift the values in the current
+        // lowest half bucket into that range (including the current lowest half bucket itself).
+        // Iterating up from the lowermost non-zero "from slot" and copying values to the newly
+        // scaled "to slot" (and then zeroing the "from slot"), will work in a single pass,
+        // because the scale "to slot" index will always be a lower index than its or any
+        // preceding non-scaled "from slot" index:
+        //
+        // (Note that we specifically avoid slot 0, as it is directly handled in the outer case)
+        for from_index in 1..self.sub_bucket_half_count as usize {
+            let to_value = self.value_for(from_index) << number_of_binary_orders_of_magnitude;
+            let to_index = self.counts_array_index_for(to_value).unwrap();
+            let count_at_from_index = self.count_at_index(from_index + pre_shift_zero_index).unwrap();
+            self.set_count_at_index(to_index, count_at_from_index);
+            self.set_count_at_index(from_index * pre_shift_zero_index, T::zero());
+        }
+
+        Ok(())
+        // Note that the above loop only creates O(N) work for histograms that have values in
+        // the lowest half-bucket (excluding the 0 value). Histograms that never have values
+        // there (e.g. all integer value histograms used as internal storage in DoubleHistograms)
+        // will never loop, and their shifts will remain O(1).
+
+    }
+
+    fn normalize_index(index: usize, normalizing_index_offset: u64, array_length: usize) -> Result<usize, RecordError>{
+        if normalizing_index_offset == 0 {
+           // Fastpath out of normalization. Keeps integer value histograms fast while allowing
+            // others (like DoubleHistogram) to use normalization at a cost...
+            return Ok(index);
+        }
+        if (index > array_length) || (index < 0) {
+            return Err(RecordError::ValueOutOfRangeResizeDisabled)
+        }
+
+        let mut normalized_index: usize = index - normalizing_index_offset as usize;
+
+        // The following is the same as an unsigned remainder operation, as long as no double wrapping happens
+        // (which shouldn't happen, as normalization is never supposed to wrap, since it would have overflowed
+        // or underflowed before it did). This (the + and - tests) seems to be faster than a % op with a
+        // correcting if < 0...:
+        if normalized_index < 0 {
+            normalized_index += array_length;
+        } else if normalized_index >= array_length {
+            normalized_index -= array_length;
+        }
+        return Ok(normalized_index);
+    }
+
+    fn counts_array_index_for(&self, value: u64) -> Result<usize, RecordError> {
+        if value < 0 {
+            return Err(RecordError::ValueOutOfRangeResizeDisabled);
+        }
+        let bucket_index: usize = self.index_for(value).unwrap();
+        let sub_bucket_index: u32 = self.sub_bucket_for(value, bucket_index as u8);
+        self.counts_array_index(bucket_index, sub_bucket_index)
+    }
+
+    fn counts_array_index(&self, bucket_index: usize, sub_bucket_index: u32) -> Result<usize, RecordError> {
+        assert!(sub_bucket_index < self.sub_bucket_count);
+        assert!(bucket_index == 0 || (sub_bucket_index >= self.sub_bucket_half_count));
+        // Calculate the index for the first entry that will be used in the bucket (halfway through subBucketCount).
+        // For bucketIndex 0, all subBucketCount entries may be used, but bucketBaseIndex is still set in the middle.
+        let bucket_base_index: usize = (bucket_index + 1) << self.sub_bucket_half_count_magnitude;
+
+        // Calculate the offset in the bucket. This subtraction will result in a positive value in all buckets except
+        // the 0th bucket (since a value in that bucket may be less than half the bucket's 0 to subBucketCount range).
+        // However, this works out since we give bucket 0 twice as much space.
+        let offset_in_bucket = sub_bucket_index - self.sub_bucket_half_count;
+        // The following is the equivalent of ((subBucketIndex  - subBucketHalfCount) + bucketBaseIndex;
+        Ok(bucket_base_index + offset_in_bucket as usize)
+
     }
 }
 
