@@ -6,8 +6,9 @@ use crate::Counter;
 
 use std::borrow::Borrow;
 
+/// Port of Double histogram
 #[derive(Debug)]
-struct DoubleHistogram<C: Counter> {
+pub struct DoubleHistogram<C: Counter> {
     // A value that will keep us from multiplying into infinity.
     auto_resize: bool,
     highest_allowed_value_ever: f64,
@@ -15,6 +16,7 @@ struct DoubleHistogram<C: Counter> {
     current_lowest_value_in_auto_range: f64,
     current_highest_value_limit_in_auto_range: f64,
     integer_values_histogram: Histogram<C>,
+    /// Temporarily: int to double ratio
     pub integer_to_double_value_conversion_ratio: f64,
     double_to_integer_value_conversion_ratio: f64
 }
@@ -77,12 +79,12 @@ impl <C: Counter> DoubleHistogram<C> {
     fn get_count_at_value(&self, value: f64) -> C {
         self.integer_values_histogram.count_at((value * self.double_to_integer_value_conversion_ratio).trunc() as u64)
     }
-
+    /// new
     pub fn new(sigfig: u8) -> Result<Self, CreationError> {
         // TODO fix this for sigfig > 1
         Self::new_with_max(std::f64::MAX, sigfig)
     }
-
+    /// new with max val
     pub fn new_with_max(max_value: f64, sigfig: u8) -> Result<Self, CreationError> {
         let mut h = Self::new_with_args(max_value / 2.0, 2, 1.0, 2.0, sigfig);
         if let Ok(ref mut h) = h {
@@ -320,6 +322,7 @@ impl <C: Counter> DoubleHistogram<C> {
         let integer_value: u64 = (value * self.double_to_integer_value_conversion_ratio).trunc() as u64;
         self.integer_values_histogram.record_n(integer_value, count)
     }
+    /// record w count
     pub fn record_value_with_count(&mut self, value: f64, count: C) -> Result<(), RecordError> {
         let mut throw_count = 0;
         loop {
@@ -363,7 +366,7 @@ impl <C: Counter> DoubleHistogram<C> {
         // TODO check if this works, probbaly not 
         //self.integer_values_histogram.add(&source.borrow().integer_values_histogram)
     }
-
+    /// sub
     pub fn subtract<B: Borrow<DoubleHistogram<C>>>(
         &mut self,
         subtrahend: B,
@@ -383,16 +386,21 @@ impl <C: Counter> DoubleHistogram<C> {
         // TODO enough? adjust ranges?
         self.integer_values_histogram.subtract(&subtrahend.borrow().integer_values_histogram)
     }
-
+    /// mean
     pub fn mean(&self) -> f64 {
         self.integer_values_histogram.mean() * self.integer_to_double_value_conversion_ratio
     }
+    /// stdev
     pub fn stdev(&self) -> f64 {
         self.integer_values_histogram.stdev() * self.integer_to_double_value_conversion_ratio
     }
+
+    /// len
     pub fn len(&self) -> u64 {
         self.integer_values_histogram.len()
     }
+
+    /// iter recorded
     pub fn iter_recorded(&self) -> HistogramIterator<'_, C, crate::iterators::recorded::Iter> {
         self.integer_values_histogram.iter_recorded()
     }
