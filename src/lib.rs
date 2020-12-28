@@ -287,7 +287,7 @@ pub struct Histogram<T: Counter> {
 
     total_count: u64,
     counts: Vec<T>,
-    normalizing_index_offset: u64,
+    normalizing_index_offset: i64,
 }
 
 /// Module containing the implementations of all `Histogram` iterators.
@@ -388,7 +388,10 @@ impl<T: Counter> Histogram<T> {
     /// Get a mutable reference to the count bucket for the given value, if it is in range.
     fn mut_at(&mut self, value: u64) -> Option<&mut T> {
         self.index_for(value)
-            .and_then(move |i| self.counts.get_mut(i))
+            .and_then(move |i| {
+                let i = Self::normalize_index(i, self.normalizing_index_offset, self.counts.len()).unwrap();
+                self.counts.get_mut(i)
+            })
     }
 
     /// Get the index of the last histogram bin.
@@ -1515,16 +1518,31 @@ impl<T: Counter> Histogram<T> {
 
     /// Returns count at index, or None if out of bounds
     fn count_at_index(&self, index: usize) -> Option<T> {
+        let i = Self::normalize_index(index, self.normalizing_index_offset, self.counts.len()).unwrap();
+   
+        self.counts.get(i).cloned()
+    }
+
+    /// Returns count at index, or None if out of bounds
+    fn count_at_normalized_index(&self, index: usize) -> Option<T> {
         self.counts.get(index).cloned()
     }
 
     /// Returns an error if the index doesn't exist.
     #[cfg(feature = "serialization")]
     fn set_count_at_index(&mut self, index: usize, count: T) -> Result<(), ()> {
+        let i = Self::normalize_index(index, self.normalizing_index_offset, self.counts.len()).unwrap();
+        let r = self.counts.get_mut(i).ok_or(())?;
+        *r = count;
+        Ok(())
+    }
+
+    fn set_count_at_normalized_index(&mut self, index: usize, count: T) -> Result<(), ()> {
         let r = self.counts.get_mut(index).ok_or(())?;
         *r = count;
         Ok(())
     }
+    
 
     /// Compute the lowest (and therefore highest precision) bucket index whose sub-buckets can
     /// represent the value.
@@ -1607,6 +1625,8 @@ impl<T: Counter> Histogram<T> {
     fn resize(&mut self, high: u64) -> Result<(), UsizeTypeTooSmall> {
         // will not overflow because lowest_discernible_value must be at least as small as
         // u64::max_value() / 2 to have passed initial validation
+        let old_normalized_zero_index = Self::normalize_index(0, self.normalizing_index_offset, self.counts.len()).unwrap();
+        let old_counts_len = self.counts.len();
         assert!(
             high >= 2 * self.lowest_discernible_value,
             "highest trackable value must be >= (2 * lowest discernible value)"
@@ -1621,12 +1641,23 @@ impl<T: Counter> Histogram<T> {
 
         // establish exponent range needed to support the trackable value with no overflow:
         self.bucket_count = buckets_needed;
-
         // establish the new highest trackable value:
         self.highest_trackable_value = high;
-
+        
         // expand counts to also hold the new counts
         self.counts.resize(len, T::zero());
+        let delta = self.counts.len() as isize - old_counts_len as isize;
+        if old_normalized_zero_index != 0 {
+            let new_normalized_zero_index = old_normalized_zero_index as isize + delta;
+            let length_to_copy = (self.counts.len() as isize - delta) as usize - old_normalized_zero_index;
+            for i in 0..length_to_copy {
+                let c = self.counts[i + old_normalized_zero_index].clone();
+                let new_c = self.counts.get_mut(i + new_normalized_zero_index as usize).unwrap();
+        
+                *new_c = c;
+            }
+            self.counts[old_normalized_zero_index..new_normalized_zero_index as usize].iter_mut().for_each(|c| *c = T::zero());
+        }
         Ok(())
     }
 
@@ -1704,11 +1735,13 @@ impl<T: Counter> Histogram<T> {
             return Ok(());
         }
 
-        let shift_amount = number_of_binary_orders_of_magnitude << self.sub_bucket_half_count_magnitude;
-        let max_value_index = self.counts_array_index_for(self.max_value)?;
-        // indicate overflow if maxValue is in the range being wrapped:
-        if max_value_index >= (self.counts.len() - shift_amount as usize) {
-            return Err(RecordError::ResizeFailedUsizeTypeTooSmall);
+        let shift_amount: i64 = self.sub_bucket_half_count as i64 * number_of_binary_orders_of_magnitude as i64;
+        
+        let min_non_zero_value_index = self.counts_array_index_for(self.min_non_zero_value)?;
+        
+        if (min_non_zero_value_index as i64) < shift_amount + self.sub_bucket_count as i64{
+            // TODO use better error
+            return Err(RecordError::ValueOutOfRangeResizeDisabled);
         }
 
         let max_value_before_shift: u64 = self.max_value;
@@ -1716,18 +1749,11 @@ impl<T: Counter> Histogram<T> {
         let min_non_zero_value_before_shift = self.min_non_zero_value;
         self.min_non_zero_value = std::u64::MAX;
 
-        let lowest_half_bucket_populated: bool = (min_non_zero_value_before_shift < (self.sub_bucket_half_count << self.unit_magnitude) as u64);
-        
-        // perform shift
-        
+        self.non_concurrent_normalizing_index_shift(-(shift_amount), false)?;
 
-        // Perform the shift:
-        self.non_concurrent_normalizing_index_shift(shift_amount, lowest_half_bucket_populated)?;
-
-        // adjust min, max:
-        self.update_min_max(max_value_before_shift << number_of_binary_orders_of_magnitude);
+        self.update_min_max(max_value_before_shift >> number_of_binary_orders_of_magnitude);
         if min_non_zero_value_before_shift < std::u64::MAX {
-            self.update_min_max(min_non_zero_value_before_shift << number_of_binary_orders_of_magnitude);
+            self.update_min_max(min_non_zero_value_before_shift >> number_of_binary_orders_of_magnitude);
         }
         Ok(())
     }
@@ -1745,8 +1771,7 @@ impl<T: Counter> Histogram<T> {
         if self.len() == self.count_at_index(0).unwrap().as_u64() {
             return Ok(())
         }
-
-        let shift_amount: u8 = number_of_binary_orders_of_magnitude << self.sub_bucket_half_count_magnitude;
+        let shift_amount = (number_of_binary_orders_of_magnitude as i64) << self.sub_bucket_half_count_magnitude;
         let max_value_index = self.counts_array_index_for(self.max_value)?;
         if max_value_index >= self.counts.len() - shift_amount as usize{
             return Err(RecordError::ValueOutOfRangeResizeDisabled);
@@ -1760,7 +1785,7 @@ impl<T: Counter> Histogram<T> {
         let lowest_half_bucket_populated: bool = min_non_zero_value_before_shift < (self.sub_bucket_half_count << self.unit_magnitude) as u64;
         
         // Perform the shift:
-        self.non_concurrent_normalizing_index_shift(shift_amount, lowest_half_bucket_populated);
+        self.non_concurrent_normalizing_index_shift(shift_amount, lowest_half_bucket_populated)?;
         self.update_min_max(max_value_before_shift << number_of_binary_orders_of_magnitude);
         if min_non_zero_value_before_shift < u64::MAX {
             self.update_min_max(min_non_zero_value_before_shift << number_of_binary_orders_of_magnitude);
@@ -1770,11 +1795,11 @@ impl<T: Counter> Histogram<T> {
 
     }
 
-    fn non_concurrent_normalizing_index_shift(&mut self, shift_amount: u8, lowest_half_bucket_populated: bool) -> Result<(), RecordError> {
+    fn non_concurrent_normalizing_index_shift(&mut self, shift_amount: i64, lowest_half_bucket_populated: bool) -> Result<(), RecordError> {
         let zero_value_count: T = self.count_at_index(0).unwrap();
-        self.set_count_at_index(0, T::zero());
+        self.set_count_at_index(0, T::zero()).unwrap();
         let pre_shift_zero_index = Self::normalize_index(0, self.normalizing_index_offset, self.counts.len()).unwrap();
-        self.normalizing_index_offset += shift_amount as u64;
+        self.normalizing_index_offset += shift_amount;
         if lowest_half_bucket_populated {
             if shift_amount <= 0 {
                  // Shifts with lowest half bucket populated can only be to the left.
@@ -1782,17 +1807,17 @@ impl<T: Counter> Histogram<T> {
                 // the lowest half bucket is not populated.
                 return Err(RecordError::ResizeFailedUsizeTypeTooSmall);
             }
-            self.shift_lowest_half_bucket_contents_left(shift_amount, pre_shift_zero_index);
+            self.shift_lowest_half_bucket_contents_left(shift_amount, pre_shift_zero_index)?;
             
         }
         // Restore the 0 value count:
-        self.set_count_at_index(0, zero_value_count);
+        self.set_count_at_index(0, zero_value_count).unwrap();
         Ok(())
 
     }
 
-    fn shift_lowest_half_bucket_contents_left(&mut self, shift_amount: u8, pre_shift_zero_index: usize) -> Result<(), RecordError> {
-        let number_of_binary_orders_of_magnitude: u8 = shift_amount >> self.sub_bucket_half_count_magnitude;
+    fn shift_lowest_half_bucket_contents_left(&mut self, shift_amount: i64, pre_shift_zero_index: usize) -> Result<(), RecordError> {
+        let number_of_binary_orders_of_magnitude = shift_amount >> self.sub_bucket_half_count_magnitude;
         
         // The lowest half-bucket (not including the 0 value) is special: unlike all other half
         // buckets, the lowest half bucket values cannot be scaled by simply changing the
@@ -1811,9 +1836,10 @@ impl<T: Counter> Histogram<T> {
         for from_index in 1..self.sub_bucket_half_count as usize {
             let to_value = self.value_for(from_index) << number_of_binary_orders_of_magnitude;
             let to_index = self.counts_array_index_for(to_value).unwrap();
-            let count_at_from_index = self.count_at_index(from_index + pre_shift_zero_index).unwrap();
-            self.set_count_at_index(to_index, count_at_from_index);
-            self.set_count_at_index(from_index * pre_shift_zero_index, T::zero());
+            let count_at_from_index = self.count_at_normalized_index(from_index + pre_shift_zero_index).unwrap();
+            self.set_count_at_index(to_index, count_at_from_index).unwrap();
+            // TODO count at normalized index here?!
+            self.set_count_at_normalized_index(from_index * pre_shift_zero_index, T::zero()).unwrap();
         }
 
         Ok(())
@@ -1824,7 +1850,7 @@ impl<T: Counter> Histogram<T> {
 
     }
 
-    fn normalize_index(index: usize, normalizing_index_offset: u64, array_length: usize) -> Result<usize, RecordError>{
+    fn normalize_index(index: usize, normalizing_index_offset: i64, array_length: usize) -> Result<usize, RecordError>{
         if normalizing_index_offset == 0 {
            // Fastpath out of normalization. Keeps integer value histograms fast while allowing
             // others (like DoubleHistogram) to use normalization at a cost...
@@ -1833,8 +1859,8 @@ impl<T: Counter> Histogram<T> {
         if (index > array_length) || (index < 0) {
             return Err(RecordError::ValueOutOfRangeResizeDisabled)
         }
-
-        let mut normalized_index: usize = index - normalizing_index_offset as usize;
+        let array_length = array_length as isize;
+        let mut normalized_index: isize = index as isize - normalizing_index_offset as isize;
 
         // The following is the same as an unsigned remainder operation, as long as no double wrapping happens
         // (which shouldn't happen, as normalization is never supposed to wrap, since it would have overflowed
@@ -1845,31 +1871,29 @@ impl<T: Counter> Histogram<T> {
         } else if normalized_index >= array_length {
             normalized_index -= array_length;
         }
-        return Ok(normalized_index);
+        return Ok(normalized_index as usize);
     }
 
     fn counts_array_index_for(&self, value: u64) -> Result<usize, RecordError> {
-        if value < 0 {
-            return Err(RecordError::ValueOutOfRangeResizeDisabled);
-        }
-        let bucket_index: usize = self.index_for(value).unwrap();
-        let sub_bucket_index: u32 = self.sub_bucket_for(value, bucket_index as u8);
+        let bucket_index = self.bucket_for(value);
+        let sub_bucket_index = self.sub_bucket_for(value, bucket_index);
         self.counts_array_index(bucket_index, sub_bucket_index)
     }
 
-    fn counts_array_index(&self, bucket_index: usize, sub_bucket_index: u32) -> Result<usize, RecordError> {
+    fn counts_array_index(&self, bucket_index: u8, sub_bucket_index: u32) -> Result<usize, RecordError> {
         assert!(sub_bucket_index < self.sub_bucket_count);
         assert!(bucket_index == 0 || (sub_bucket_index >= self.sub_bucket_half_count));
         // Calculate the index for the first entry that will be used in the bucket (halfway through subBucketCount).
         // For bucketIndex 0, all subBucketCount entries may be used, but bucketBaseIndex is still set in the middle.
-        let bucket_base_index: usize = (bucket_index + 1) << self.sub_bucket_half_count_magnitude;
-
+        let bucket_base_index = (i32::from(bucket_index) + 1) << self.sub_bucket_half_count_magnitude;
         // Calculate the offset in the bucket. This subtraction will result in a positive value in all buckets except
         // the 0th bucket (since a value in that bucket may be less than half the bucket's 0 to subBucketCount range).
         // However, this works out since we give bucket 0 twice as much space.
-        let offset_in_bucket = sub_bucket_index - self.sub_bucket_half_count;
+        let offset_in_bucket = sub_bucket_index as i32- self.sub_bucket_half_count as i32;
         // The following is the equivalent of ((subBucketIndex  - subBucketHalfCount) + bucketBaseIndex;
-        Ok(bucket_base_index + offset_in_bucket as usize)
+        let index = bucket_base_index + offset_in_bucket;
+        assert!(index >= 0);
+        Ok(index as usize)
 
     }
 }

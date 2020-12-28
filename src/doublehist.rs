@@ -7,7 +7,7 @@ use crate::Counter;
 use std::borrow::Borrow;
 
 /// Port of Double histogram
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DoubleHistogram<C: Counter> {
     // A value that will keep us from multiplying into infinity.
     auto_resize: bool,
@@ -22,7 +22,7 @@ pub struct DoubleHistogram<C: Counter> {
 }
 
 impl <C: Counter> DoubleHistogram<C> {
-    fn new_with_args(highest_allowed_value_ever: f64,
+    fn new_with_args(
         configured_highest_to_lowest_value_ratio: u64,
         current_lowest_value_in_auto_range: f64,
         current_highest_value_limit_in_auto_range: f64,
@@ -35,9 +35,14 @@ impl <C: Counter> DoubleHistogram<C> {
                 // TODO make dedicated error variant
                 return Err(CreationError::SigFigExceedsMax)
             }
-            
+
+            let mut highest_allowed_value_ever = 1.0;
+            while highest_allowed_value_ever < std::f64::MAX / 4.0 {
+                highest_allowed_value_ever *= 2.0;
+            }
             let integer_value_range = Self::derive_integer_value_range(configured_highest_to_lowest_value_ratio, sigfig);
-            let integer_values_histogram = Histogram::new_with_bounds(1, integer_value_range, sigfig)?;
+            let mut integer_values_histogram = Histogram::new_with_bounds(1, integer_value_range - 1, sigfig)?;
+            integer_values_histogram.auto(true);
             // We want the auto-ranging to tend towards using a value range that will result in using the
             // lower tracked value ranges and leave the higher end empty unless the range is actually used.
             // This is most easily done by making early recordings force-shift the lower value limit to
@@ -46,7 +51,7 @@ impl <C: Counter> DoubleHistogram<C> {
             // downwards from there:
             let initial_lowest_value_in_auto_range: f64 = 2.0_f64.powi(800);
             let mut hist = DoubleHistogram {
-                auto_resize: false,
+                auto_resize: true,
                 highest_allowed_value_ever,
                 configured_highest_to_lowest_value_ratio,
                 current_highest_value_limit_in_auto_range,
@@ -82,11 +87,14 @@ impl <C: Counter> DoubleHistogram<C> {
     /// new
     pub fn new(sigfig: u8) -> Result<Self, CreationError> {
         // TODO fix this for sigfig > 1
-        Self::new_with_max(std::f64::MAX, sigfig)
+        Self::new_with_args(2, 1.0, 2.0, sigfig).map(|mut h| {
+            h.integer_values_histogram.auto(true);
+            h
+        })
     }
     /// new with max val
     pub fn new_with_max(max_value: f64, sigfig: u8) -> Result<Self, CreationError> {
-        let mut h = Self::new_with_args(max_value / 2.0, 2, 1.0, 2.0, sigfig);
+        let mut h = Self::new_with_args(max_value.ceil() as u64, 1.0, max_value, sigfig);
         if let Ok(ref mut h) = h {
             h.integer_values_histogram.auto(true);
         }
@@ -108,7 +116,7 @@ impl <C: Counter> DoubleHistogram<C> {
         let lowest_tracking_integer_value: u64 = (Self::number_of_sub_buckets(sigfig) / 2) as u64;
         let integer_value_range: u64 = lowest_tracking_integer_value * internal_highest_to_lowest_value_ratio;
 
-        internal_highest_to_lowest_value_ratio
+        integer_value_range
     }
     fn derive_internal_highest_to_lowest_value_ratio(external_highest_to_lowest_value_ratio: u64) -> u64 {
         1_u64 << (Self::find_containing_binary_order_of_magnitude_u(external_highest_to_lowest_value_ratio) + 1)
@@ -143,14 +151,13 @@ impl <C: Counter> DoubleHistogram<C> {
     }
     fn auto_adjust_range_for_value_slow_path(&mut self, value: f64) -> Result<(), errors::RecordError> {
         if value < self.current_lowest_value_in_auto_range {
-            if (value < 0.0) {
+            if value < 0.0 {
                 return Err(errors::RecordError::ValueOutOfRangeResizeDisabled);
             }
             loop {
-                //dbg!("1");
                 let shift_amount: u8 =
                 self.find_capped_containing_binary_order_of_magnitude(
-                        (self.current_lowest_value_in_auto_range / value).ceil() - 1.0);
+                    (self.current_lowest_value_in_auto_range / value).ceil() - 1.0);
                 self.shift_covered_range_to_the_right(shift_amount)?;
 
                 if value >= self.current_lowest_value_in_auto_range {
@@ -162,14 +169,14 @@ impl <C: Counter> DoubleHistogram<C> {
                 return Err(RecordError::ResizeFailedUsizeTypeTooSmall);
             }
             loop {
-                dbg!("2");
                     // If value is an exact whole multiple of currentHighestValueLimitInAutoRange, it "belongs" with
                     // the next level up, as it crosses the limit. With floating point values, the simplest way to
                     // make this shift on exact multiple values happen (but not for any just-smaller-than-exact-multiple
                     // values) is to use a value that is 1 ulp bigger in computing the ratio for the shift amount:
                     let shift_amount: u8 =
+                            
                             self.find_capped_containing_binary_order_of_magnitude(
-                                    float_extras::f64::nextafter(value, std::f64::MAX).ceil() / self.current_highest_value_limit_in_auto_range - 1.0);
+                                    float_extras::f64::nextafter(value, std::f64::INFINITY).ceil() / self.current_highest_value_limit_in_auto_range - 1.0);
                     self.shift_covered_range_to_the_left(shift_amount)?;
                     if value < self.current_highest_value_limit_in_auto_range {
                         break;
@@ -218,6 +225,9 @@ impl <C: Counter> DoubleHistogram<C> {
                             new_integer_to_double_value_conversion_ratio).is_err() {
                                 self.handle_shift_values_exception(number_of_binary_orders_of_magnitude)?;
                                 new_lowest_value_in_auto_range /= shift_multiplier;
+                            } else {
+                                new_lowest_value_in_auto_range *= shift_multiplier;
+                                new_highest_value_limit_in_auto_range *= shift_multiplier;
                             }
             }
             // Shift was successful. Adjust new range to reflect:
@@ -243,7 +253,6 @@ impl <C: Counter> DoubleHistogram<C> {
         let mut new_highest_value_limit_in_auto_range: f64 = self.current_highest_value_limit_in_auto_range;
 
         let shift_multiplier: f64 = 1.0 / ( 1_u64 << number_of_binary_orders_of_magnitude) as f64;
-
         // First, temporarily change the highest value in auto-range without changing conversion ratios.
         // This is done to force new values higher than the new expected highest value to attempt an
         // adjustment (which is synchronized and will wait behind this one). This ensures that we will
@@ -303,11 +312,10 @@ impl <C: Counter> DoubleHistogram<C> {
     fn record_single_value(&mut self, value: f64) -> Result<(), errors::RecordError>  {
         let mut throw_count: u8 = 0;
         loop {
-            dbg!("3");
             if (value < self.current_lowest_value_in_auto_range) || (value >= self.current_highest_value_limit_in_auto_range) {
                 // Zero is valid and needs no auto-ranging, but also rare enough that we should deal
                 // with it on the slow path...
-                self.auto_adjust_range_for_value(value);
+                self.auto_adjust_range_for_value(value)?;
             }
             if self.record_converted_double_value(value).is_ok() {
                 return Ok(());
@@ -329,7 +337,7 @@ impl <C: Counter> DoubleHistogram<C> {
             if (value < self.current_lowest_value_in_auto_range) || (value >= self.current_highest_value_limit_in_auto_range) {
                 // Zero is valid and needs no auto-ranging, but also rare enough that we should deal
                 // with it on the slow path...
-                self.auto_adjust_range_for_value(value);
+                self.auto_adjust_range_for_value(value)?;
             }
 
             if self.record_converted_double_value_with_count(value, count).is_ok() {
@@ -386,6 +394,14 @@ impl <C: Counter> DoubleHistogram<C> {
         // TODO enough? adjust ranges?
         self.integer_values_histogram.subtract(&subtrahend.borrow().integer_values_histogram)
     }
+    /// max
+    pub fn max(&self) -> f64 {
+        self.integer_values_histogram.max().as_f64() * self.integer_to_double_value_conversion_ratio
+    }
+    /// min
+    pub fn min(&self) -> f64 {
+        self.integer_values_histogram.min().as_f64() * self.integer_to_double_value_conversion_ratio
+    }    
     /// mean
     pub fn mean(&self) -> f64 {
         self.integer_values_histogram.mean() * self.integer_to_double_value_conversion_ratio
@@ -404,24 +420,81 @@ impl <C: Counter> DoubleHistogram<C> {
     pub fn iter_recorded(&self) -> HistogramIterator<'_, C, crate::iterators::recorded::Iter> {
         self.integer_values_histogram.iter_recorded()
     }
+    /// reset hist
+    pub fn reset(&mut self) {
+        self.integer_values_histogram.reset();
+        let initial_lowest_value_in_auto_range = 2.0_f64.powi(800);
+        self.init(self.configured_highest_to_lowest_value_ratio, initial_lowest_value_in_auto_range)
+    }
 }
 
 
 #[cfg(test)]
 mod test {
     use super::*;
+    const TRACKABLE_VALUE_RANGE: f64 = 3600.0 * 1000.0 * 1000.0;
 
     #[test]
-    fn test_new() {
-        let mut h: DoubleHistogram<u8> = DoubleHistogram::new_with_max(16.0, 1).unwrap();
-        h.record_single_value(1.5);
-        h.record_single_value(2.5);
-        //dbg!(&h);
-        dbg!(h.mean(), h.stdev());
+    fn mean() {
 
-        let mut h2: DoubleHistogram<u8> = DoubleHistogram::new_with_max(16.0, 1).unwrap();
-        h2.record_single_value(1.7);
-        h.subtract(h2);
-        dbg!(h.mean());
+        let mut h: DoubleHistogram<u64> = DoubleHistogram::new_with_max(50.0, 3).unwrap();
+        h.record_single_value(20.0);
+        assert_eq!(h.mean(), 20.0);
+        h.record_single_value(10.0);
+        assert_eq!(h.len(), 2);
+        assert_eq!(h.min(), 10.0);
+        assert_eq!(h.max(), 20.0078125);
+        assert!((h.mean() - 15.0).abs() < 0.01);
+
+    }
+    #[test]
+    fn add_and_sub() {
+
+        let mut h: DoubleHistogram<u64> = DoubleHistogram::new_with_max(50.0, 3).unwrap();
+        h.record_single_value(20.0);
+        assert_eq!(h.mean(), 20.0);
+        let h2 = h.clone();
+        h.add(&h2);
+        assert_eq!(h.mean(), 20.0);
+        let mut h3: DoubleHistogram<u64> = DoubleHistogram::new_with_max(50.0, 3).unwrap();
+        h3.record_single_value(10.0);   
+        h.add(&h3);     
+        assert_eq!(h.mean(), 16.671875);
+        h.subtract(&h3);
+        assert_eq!(h.mean(), 20.0078125);
+        
+
+    }
+    #[test]
+    fn test_data_range() {
+        let mut h: DoubleHistogram<u64> = DoubleHistogram::new(2).unwrap();
+        h.record_single_value(0.0);
+        assert_eq!(h.get_count_at_value(0.0), 1);
+
+        let mut top_value = 1.0;
+        while (h.record_single_value(top_value).is_ok()) {
+            top_value *= 2.0;
+        }
+       // let expected = (1_u64 << 32) as f64;
+        let expected = 144115188075855870.0;
+        assert!(dbg!(((expected)  - dbg!(top_value)).abs()) < 0.00001);
+        assert_eq!(1, h.get_count_at_value(0.0));
+    }
+
+    #[test]
+    fn test_construction_argument_gets() {
+        let mut h: DoubleHistogram<u8> = DoubleHistogram::new_with_max(TRACKABLE_VALUE_RANGE, 3).unwrap();
+        h.record_single_value(2.0f64.powi(20));
+        h.record_single_value(1.0);
+        assert!( 1.0 - h.current_lowest_value_in_auto_range < 0.001);
+        assert_eq!(h.configured_highest_to_lowest_value_ratio as f64, TRACKABLE_VALUE_RANGE);
+        assert_eq!(3, h.integer_values_histogram.sigfig());
+
+        let mut h2: DoubleHistogram<u8> = DoubleHistogram::new_with_max(TRACKABLE_VALUE_RANGE, 3).unwrap();
+        h2.record_single_value(2048.0 * 1024.0 * 1024.0);
+        assert!(2048.0 * 1024.0 * 1024.0 - h2.current_lowest_value_in_auto_range < 0.001);
+        let mut h3: DoubleHistogram<u8> = DoubleHistogram::new_with_max(TRACKABLE_VALUE_RANGE, 3).unwrap();
+        h3.record_single_value(1.0/1000.0);
+        assert_eq!(1.0/1024.0, h3.current_lowest_value_in_auto_range);
     }
 }
