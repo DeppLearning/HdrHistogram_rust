@@ -58,6 +58,25 @@ impl<C: Counter> DoubleHistogram<C> {
         hist.init();
         Ok(hist)
     }
+
+    /// see [Histogram::new](crate::Histogram::new)
+    pub fn new(sigfig: u8) -> Result<Self, CreationError> {
+        let mut h = Self::new_with_args(2, 1.0, 2.0, sigfig);
+        if let Ok(ref mut h) = h {
+            h.auto(true);
+        }
+        h
+    }
+    /// see [Histogram::new_with_max](crate::Histogram::new_with_max)
+    pub fn new_with_max(max_value: f64, sigfig: u8) -> Result<Self, CreationError> {
+        Self::new_with_args(max_value.ceil() as u64, 1.0, max_value, sigfig)
+    }
+
+    /// see [Histogram::new_with_bounds](crate::Histogram::new_with_bounds)
+    pub fn new_with_bounds(low: f64, high: f64, sigfig: u8) -> Result<Self, CreationError> {
+        Self::new_with_args((high/low).ceil() as u64, low, high, sigfig)
+    }
+
     fn auto(&mut self, enabled: bool) {
         self.integer_values_histogram.auto(enabled);
     }
@@ -109,18 +128,6 @@ impl<C: Counter> DoubleHistogram<C> {
     pub fn count_at(&self, value: f64) -> C {
         self.integer_values_histogram
             .count_at((value * self.double_to_integer_value_conversion_ratio).trunc() as u64)
-    }
-    /// see [Histogram::new](crate::Histogram::new)
-    pub fn new(sigfig: u8) -> Result<Self, CreationError> {
-        let mut h = Self::new_with_args(2, 1.0, 2.0, sigfig);
-        if let Ok(ref mut h) = h {
-            h.auto(true);
-        }
-        h
-    }
-    /// see [Histogram::new_with_max](crate::Histogram::new_with_max)
-    pub fn new_with_max(max_value: f64, sigfig: u8) -> Result<Self, CreationError> {
-        Self::new_with_args(max_value.ceil() as u64, 1.0, max_value, sigfig)
     }
 
     // Internal dynamic range needs to be 1 order of magnitude larger than the containing order of magnitude.
@@ -493,11 +500,19 @@ impl<C: Counter> DoubleHistogram<C> {
 
     /// iter recorded median equivalent
     pub fn iter_recorded_median_equivalent(&self) -> Box<dyn Iterator<Item = (C, f64)> + '_> {
-        Box::new(self.integer_values_histogram.iter_recorded().map(move |record| {
-            let val = self.integer_to_double_value_conversion_ratio * self.integer_values_histogram.median_equivalent(record.value_iterated_to()) as f64;
-            let count = record.count_at_value();
-            (count, val)
-        }))
+        Box::new(
+            self.integer_values_histogram
+                .iter_recorded()
+                .map(move |record| {
+                    let val = self.integer_to_double_value_conversion_ratio
+                        * self
+                            .integer_values_histogram
+                            .median_equivalent(record.value_iterated_to())
+                            as f64;
+                    let count = record.count_at_value();
+                    (count, val)
+                }),
+        )
     }
 
     /// reset hist
