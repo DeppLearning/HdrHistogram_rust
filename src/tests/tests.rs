@@ -54,7 +54,7 @@ fn shift_lowest_bucket() {
         h2.record(1024 << shift_amount);
         h2.record(1025 << shift_amount);
         
-        h1.shift_values_left(shift_amount, 1.0);
+        h1.shift_values_left(shift_amount);
         assert_eq!(h1.max(), h2.max());
         assert_eq!(h1.min(), h2.min());
         // TODO min max assert enough?
@@ -91,10 +91,10 @@ fn shift_lowest_bucket() {
             h2.record((1024 << 10) << shift_amount);
             h2.record((1025 << 10) << shift_amount);
             
-            h1.shift_values_left(shift_amount, 1.0);
+            h1.shift_values_left(shift_amount);
             assert_eq!(h1.min(), h2.min());
             assert_eq!(h1.max(), h2.max());
-            h1.shift_values_right(shift_amount, 1.0);
+            h1.shift_values_right(shift_amount);
             assert_eq!(h1, orig_hist);
         }
     }
