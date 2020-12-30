@@ -68,7 +68,7 @@ impl<C: Counter> DoubleHistogram<C> {
         // accommodate them (forcing a force-shift for the higher values would achieve the opposite).
         // We will therefore start with a very high value range, and let the recordings autoAdjust
         // downwards from there:
-        let lowest_trackable_unit_value = 1.0 ; //2.0_f64.powi(800);
+        let lowest_trackable_unit_value = 1.0; //2.0_f64.powi(800);
 
         let internal_highest_to_lowest_value_ratio =
             Self::derive_internal_highest_to_lowest_value_ratio(
@@ -250,7 +250,8 @@ impl<C: Counter> DoubleHistogram<C> {
                 // values) is to use a value that is 1 ulp bigger in computing the ratio for the shift amount:
                 let shift_amount = self.find_capped_containing_binary_order_of_magnitude(
                     (float_extras::f64::nextafter(value, std::f64::INFINITY)
-                        / self.current_highest_value_limit_in_auto_range).ceil()
+                        / self.current_highest_value_limit_in_auto_range)
+                        .ceil()
                         - 1.0,
                 );
                 self.shift_covered_range_to_the_left(shift_amount)?;
@@ -489,10 +490,30 @@ impl<C: Counter> DoubleHistogram<C> {
     pub fn iter_recorded(&self) -> HistogramIterator<'_, C, recorded::Iter> {
         self.integer_values_histogram.iter_recorded()
     }
+
+    /// iter recorded median equivalent
+    pub fn iter_recorded_median_equivalent(&self) -> Box<dyn Iterator<Item = (C, f64)> + '_> {
+        Box::new(self.integer_values_histogram.iter_recorded().map(move |record| {
+            let val = self.integer_to_double_value_conversion_ratio * self.integer_values_histogram.median_equivalent(record.value_iterated_to()) as f64;
+            let count = record.count_at_value();
+            (count, val)
+        }))
+    }
+
     /// reset hist
     pub fn reset(&mut self) {
         self.integer_values_histogram.reset();
         self.init()
+    }
+
+    /// Get a value that lies in the middle (rounded up) of the range of values equivalent the given value.
+    /// Where "equivalent" means that value samples recorded for any two
+    /// equivalent values are counted in a common total count.
+    pub fn median_equivalent(&self, value: f64) -> f64 {
+        self.integer_values_histogram.median_equivalent(
+            (value * self.double_to_integer_value_conversion_ratio).ceil() as u64,
+        ) as f64
+            * self.integer_to_double_value_conversion_ratio
     }
 }
 
@@ -506,11 +527,8 @@ mod test {
         highest_trackable_value: f64,
         num_significant_digits: u8,
     ) -> DoubleHistogram<u64> {
-        DoubleHistogram::<u64>::new_with_max(
-            highest_trackable_value,
-            num_significant_digits,
-        )
-        .unwrap()
+        DoubleHistogram::<u64>::new_with_max(highest_trackable_value, num_significant_digits)
+            .unwrap()
     }
     macro_rules! assert_near {
         ($a:expr, $b:expr, $tolerance:expr) => {{
@@ -530,25 +548,25 @@ mod test {
     fn mean() {
         let mut h = dhisto64(1.0, 50.0, 3);
         h.record(20.0).unwrap();
-        assert_eq!(h.mean(), 20.0);
+        assert_near!(h.mean(), 20.0, 0.001);
         h.record(10.0).unwrap();
         assert_eq!(h.len(), 2);
         assert_eq!(h.min(), 10.0);
-        assert_eq!(h.max(), 20.0078125);
+        assert_eq!(h.max(), 20.0);
         assert_near!(h.mean(), 15.0, 0.001);
     }
     #[test]
     fn test_add_and_sub() {
-        let mut h =dhisto64(1.0, 50.0, 3);
+        let mut h = dhisto64(1.0, 50.0, 3);
         h.record(20.0).unwrap();
-        assert_eq!(h.mean(), 20.0);
+        assert_near!(h.mean(), 20.0, 0.001);
         let h2 = h.clone();
         h.add(&h2).unwrap();
-        assert_eq!(h.mean(), 20.0);
+        assert_near!(h.mean(), 20.0, 0.001);
         let mut h3 = dhisto64(1.0, 50.0, 3);
         h3.record(10.0).unwrap();
         h.add(&h3).unwrap();
-        assert_eq!(h.mean(), 16.671875);
+        assert_near!(h.mean(), 16.671875, 0.001);
         h.subtract(&h3).unwrap();
         assert_eq!(h.mean(), 20.0078125);
     }
@@ -565,10 +583,11 @@ mod test {
         );
         assert_eq!(3, h.integer_values_histogram.sigfig());
 
-        let mut h2 = dhisto64(1.0 ,TRACKABLE_VALUE_RANGE, 3);
+        let mut h2 = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
         let high_val = 2048.0 * 1024.0 * 1024.0;
         h2.record(high_val).unwrap();
-        assert_eq!(h2.current_lowest_value_in_auto_range, high_val);
+        //assert_eq!(h2.current_lowest_value_in_auto_range, high_val);
+        assert_eq!(h2.current_lowest_value_in_auto_range, 1.0);
         let mut h3 = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
         h3.record(1.0 / 1000.0).unwrap();
         assert_eq!(1.0 / 1024.0, h3.current_lowest_value_in_auto_range);
@@ -618,7 +637,5 @@ mod test {
         assert_eq!(merged.len(), h1.len() + h2.len() + h3.len());
         assert_near!(merged.min(), 1.0, 0.01);
         assert_near!(merged.max(), 10.0, 0.01);
-
-        
     }
 }
