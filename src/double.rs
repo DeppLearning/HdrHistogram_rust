@@ -7,7 +7,7 @@ use crate::{
 
 use std::{borrow::Borrow, f64::consts::LN_2};
 
-/// Port of Double histogram
+/// DoubleHistogram
 #[derive(Clone, Debug)]
 pub struct DoubleHistogram<C: Counter> {
     // A value that will keep us from multiplying into infinity.
@@ -68,7 +68,7 @@ impl<C: Counter> DoubleHistogram<C> {
         // accommodate them (forcing a force-shift for the higher values would achieve the opposite).
         // We will therefore start with a very high value range, and let the recordings autoAdjust
         // downwards from there:
-        let lowest_trackable_unit_value = 2.0_f64.powi(800);
+        let lowest_trackable_unit_value = 1.0 ; //2.0_f64.powi(800);
 
         let internal_highest_to_lowest_value_ratio =
             Self::derive_internal_highest_to_lowest_value_ratio(
@@ -105,12 +105,12 @@ impl<C: Counter> DoubleHistogram<C> {
         self.integer_values_histogram.sub_bucket_half_count
     }
 
-    /// See also: [`crate::Histogram`](method@count_at)
+    /// see [Histogram::count_at](crate::Histogram::count_at)
     pub fn count_at(&self, value: f64) -> C {
         self.integer_values_histogram
             .count_at((value * self.double_to_integer_value_conversion_ratio).trunc() as u64)
     }
-    /// new
+    /// see [Histogram::new](crate::Histogram::new)
     pub fn new(sigfig: u8) -> Result<Self, CreationError> {
         let mut h = Self::new_with_args(2, 1.0, 2.0, sigfig);
         if let Ok(ref mut h) = h {
@@ -118,7 +118,7 @@ impl<C: Counter> DoubleHistogram<C> {
         }
         h
     }
-    /// new with max val
+    /// see [Histogram::new_with_max](crate::Histogram::new_with_max)
     pub fn new_with_max(max_value: f64, sigfig: u8) -> Result<Self, CreationError> {
         Self::new_with_args(max_value.ceil() as u64, 1.0, max_value, sigfig)
     }
@@ -501,55 +501,63 @@ mod test {
     use super::*;
     const TRACKABLE_VALUE_RANGE: f64 = 3600.0 * 1000.0 * 1000.0;
 
+    fn dhisto64(
+        lowest_discernible_value: f64,
+        highest_trackable_value: f64,
+        num_significant_digits: u8,
+    ) -> DoubleHistogram<u64> {
+        DoubleHistogram::<u64>::new_with_max(
+            highest_trackable_value,
+            num_significant_digits,
+        )
+        .unwrap()
+    }
+    macro_rules! assert_near {
+        ($a:expr, $b:expr, $tolerance:expr) => {{
+            let a = $a;
+            let b = $b;
+            let tol = $tolerance;
+            assert!(
+                (a - b).abs() <= b * tol,
+                "assertion failed: `(left ~= right) (left: `{}`, right: `{}`, tolerance: `{:.5}%`)",
+                a,
+                b,
+                100.0 * tol
+            );
+        }};
+    }
     #[test]
     fn mean() {
-        let mut h: DoubleHistogram<u64> = DoubleHistogram::new_with_max(50.0, 3).unwrap();
-        h.record(20.0);
+        let mut h = dhisto64(1.0, 50.0, 3);
+        h.record(20.0).unwrap();
         assert_eq!(h.mean(), 20.0);
-        h.record(10.0);
+        h.record(10.0).unwrap();
         assert_eq!(h.len(), 2);
         assert_eq!(h.min(), 10.0);
         assert_eq!(h.max(), 20.0078125);
-        assert!((h.mean() - 15.0).abs() < 0.01);
+        assert_near!(h.mean(), 15.0, 0.001);
     }
     #[test]
-    fn add_and_sub() {
-        let mut h: DoubleHistogram<u64> = DoubleHistogram::new_with_max(50.0, 3).unwrap();
-        h.record(20.0);
+    fn test_add_and_sub() {
+        let mut h =dhisto64(1.0, 50.0, 3);
+        h.record(20.0).unwrap();
         assert_eq!(h.mean(), 20.0);
         let h2 = h.clone();
-        h.add(&h2);
+        h.add(&h2).unwrap();
         assert_eq!(h.mean(), 20.0);
-        let mut h3: DoubleHistogram<u64> = DoubleHistogram::new_with_max(50.0, 3).unwrap();
-        h3.record(10.0);
-        h.add(&h3);
+        let mut h3 = dhisto64(1.0, 50.0, 3);
+        h3.record(10.0).unwrap();
+        h.add(&h3).unwrap();
         assert_eq!(h.mean(), 16.671875);
-        h.subtract(&h3);
+        h.subtract(&h3).unwrap();
         assert_eq!(h.mean(), 20.0078125);
-    }
-    #[test]
-    fn test_data_range() {
-        let mut h: DoubleHistogram<u64> = DoubleHistogram::new(2).unwrap();
-        h.record(0.0);
-        assert_eq!(h.count_at(0.0), 1);
-
-        let mut top_value = 1.0;
-        while (h.record(top_value).is_ok()) {
-            top_value *= 2.0;
-        }
-        // TODO expected is different from java impl
-        // let expected = (1_u64 << 32) as f64;
-        let expected = 144115188075855870.0;
-        assert!(((expected) - top_value).abs() < 0.00001);
-        assert_eq!(1, h.count_at(0.0));
     }
 
     #[test]
     fn test_construction_argument_gets() {
-        let mut h: DoubleHistogram<u8> =
-            DoubleHistogram::new_with_max(TRACKABLE_VALUE_RANGE, 3).unwrap();
-        h.record(2.0f64.powi(20));
-        h.record(1.0);
+        let mut h = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
+        h.record(2.0f64.powi(20)).unwrap();
+        h.record(1.0).unwrap();
         assert!(1.0 - h.current_lowest_value_in_auto_range < 0.001);
         assert_eq!(
             h.configured_highest_to_lowest_value_ratio as f64,
@@ -557,13 +565,60 @@ mod test {
         );
         assert_eq!(3, h.integer_values_histogram.sigfig());
 
-        let mut h2: DoubleHistogram<u8> =
-            DoubleHistogram::new_with_max(TRACKABLE_VALUE_RANGE, 3).unwrap();
-        h2.record(2048.0 * 1024.0 * 1024.0);
-        assert!(2048.0 * 1024.0 * 1024.0 - h2.current_lowest_value_in_auto_range < 0.001);
-        let mut h3: DoubleHistogram<u8> =
-            DoubleHistogram::new_with_max(TRACKABLE_VALUE_RANGE, 3).unwrap();
-        h3.record(1.0 / 1000.0);
+        let mut h2 = dhisto64(1.0 ,TRACKABLE_VALUE_RANGE, 3);
+        let high_val = 2048.0 * 1024.0 * 1024.0;
+        h2.record(high_val).unwrap();
+        assert_eq!(h2.current_lowest_value_in_auto_range, high_val);
+        let mut h3 = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
+        h3.record(1.0 / 1000.0).unwrap();
         assert_eq!(1.0 / 1024.0, h3.current_lowest_value_in_auto_range);
+    }
+
+    #[test]
+    fn test_data_range() {
+        let mut h: DoubleHistogram<u64> = DoubleHistogram::new(2).unwrap();
+        h.record(0.0).unwrap();
+        assert_eq!(h.count_at(0.0), 1);
+
+        let mut top_value = 1.0;
+        while h.record(top_value).is_ok() {
+            top_value *= 2.0;
+        }
+        // TODO expected is different from java impl
+        // let expected = (1_u64 << 32) as f64;
+        let expected = 144115188075855870.0;
+        assert_near!(top_value, expected, 0.00001);
+        assert_eq!(h.count_at(0.0), 1);
+    }
+
+    #[test]
+    fn test_add_with_auto_resize() {
+        let mut h1 = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
+        h1.auto(true);
+        h1.record(6.0).unwrap();
+        h1.record(1.0).unwrap();
+        h1.record(5.0).unwrap();
+        h1.record(8.0).unwrap();
+        h1.record(3.0).unwrap();
+        h1.record(7.0).unwrap();
+        let mut h2 = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
+        h2.auto(true);
+        h2.record(9.0).unwrap();
+        let mut h3 = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
+        h3.auto(true);
+        h3.record(4.0).unwrap();
+        h3.record(2.0).unwrap();
+        h3.record(10.0).unwrap();
+        let mut merged = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
+        merged.auto(true);
+        merged.add(&h1).unwrap();
+        merged.add(&h2).unwrap();
+        merged.add(&h3).unwrap();
+
+        assert_eq!(merged.len(), h1.len() + h2.len() + h3.len());
+        assert_near!(merged.min(), 1.0, 0.01);
+        assert_near!(merged.max(), 10.0, 0.01);
+
+        
     }
 }

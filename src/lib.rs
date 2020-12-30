@@ -208,7 +208,7 @@ use std::ops::{AddAssign, SubAssign};
 
 use iterators::HistogramIterator;
 
-pub mod doublehist;
+pub mod double;
 
 /// Min value of a new histogram.
 /// Equivalent to `u64::max_value()`, but const functions aren't allowed (yet).
@@ -1726,8 +1726,8 @@ impl<T: Counter> Histogram<T> {
 
         restat_state.update_histogram(self);
     }
-
-    fn shift_values_right(
+    /// Shift all values to the right
+    pub fn shift_values_right(
         &mut self,
         number_of_binary_orders_of_magnitude: u8,
     ) -> Result<(), RecordError> {
@@ -1766,8 +1766,8 @@ impl<T: Counter> Histogram<T> {
         }
         Ok(())
     }
-
-    fn shift_values_left(
+    /// Shift all values to the left
+    pub fn shift_values_left(
         &mut self,
         number_of_binary_orders_of_magnitude: u8,
     ) -> Result<(), RecordError> {
