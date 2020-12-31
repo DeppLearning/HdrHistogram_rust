@@ -515,6 +515,25 @@ impl<C: Counter> DoubleHistogram<C> {
         )
     }
 
+        /// iter recorded median equivalent
+        ///
+        /// like 1 but with count_since_last_iteration
+        pub fn iter_recorded_median_equivalent_cnt_last_it(&self) -> Box<dyn Iterator<Item = (u64, f64)> + '_> {
+            Box::new(
+                self.integer_values_histogram
+                    .iter_recorded()
+                    .map(move |record| {
+                        let val = self.integer_to_double_value_conversion_ratio
+                            * self
+                                .integer_values_histogram
+                                .median_equivalent(record.value_iterated_to())
+                                as f64;
+                        let count = record.count_since_last_iteration();
+                        (count, val)
+                    }),
+            )
+        }
+
     /// reset hist
     pub fn reset(&mut self) {
         self.integer_values_histogram.reset();
