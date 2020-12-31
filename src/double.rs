@@ -74,7 +74,7 @@ impl<C: Counter> DoubleHistogram<C> {
 
     /// see [Histogram::new_with_bounds](crate::Histogram::new_with_bounds)
     pub fn new_with_bounds(low: f64, high: f64, sigfig: u8) -> Result<Self, CreationError> {
-        Self::new_with_args((high/low).ceil() as u64, low, high, sigfig)
+        Self::new_with_args((high / low).ceil() as u64, low, high, sigfig)
     }
 
     fn auto(&mut self, enabled: bool) {
@@ -87,16 +87,17 @@ impl<C: Counter> DoubleHistogram<C> {
         // accommodate them (forcing a force-shift for the higher values would achieve the opposite).
         // We will therefore start with a very high value range, and let the recordings autoAdjust
         // downwards from there:
-        let lowest_trackable_unit_value = 1.0; //2.0_f64.powi(800);
-
-        let internal_highest_to_lowest_value_ratio =
-            Self::derive_internal_highest_to_lowest_value_ratio(
-                self.configured_highest_to_lowest_value_ratio,
-            );
-        self.set_trackable_value_range(
-            lowest_trackable_unit_value,
-            lowest_trackable_unit_value * internal_highest_to_lowest_value_ratio as f64,
-        )
+        //let lowest_trackable_unit_value = 1.0; //2.0_f64.powi(800);
+//
+        //let internal_highest_to_lowest_value_ratio =
+        //    Self::derive_internal_highest_to_lowest_value_ratio(
+        //        self.configured_highest_to_lowest_value_ratio,
+        //    );
+        //self.set_trackable_value_range(
+        //    lowest_trackable_unit_value,
+        //    lowest_trackable_unit_value * internal_highest_to_lowest_value_ratio as f64,
+        //)
+        self.set_trackable_value_range(self.current_lowest_value_in_auto_range, self.current_highest_value_limit_in_auto_range);
     }
     fn set_trackable_value_range(
         &mut self,
@@ -219,8 +220,7 @@ impl<C: Counter> DoubleHistogram<C> {
         value: f64,
         count: C,
     ) -> Result<(), RecordError> {
-        let integer_value: u64 =
-            (value * self.double_to_integer_value_conversion_ratio).trunc() as u64;
+        let integer_value = (value * self.double_to_integer_value_conversion_ratio).trunc() as u64;
         self.integer_values_histogram.record_n(integer_value, count)
     }
 
@@ -515,24 +515,26 @@ impl<C: Counter> DoubleHistogram<C> {
         )
     }
 
-        /// iter recorded median equivalent
-        ///
-        /// like 1 but with count_since_last_iteration
-        pub fn iter_recorded_median_equivalent_cnt_last_it(&self) -> Box<dyn Iterator<Item = (u64, f64)> + '_> {
-            Box::new(
-                self.integer_values_histogram
-                    .iter_recorded()
-                    .map(move |record| {
-                        let val = self.integer_to_double_value_conversion_ratio
-                            * self
-                                .integer_values_histogram
-                                .median_equivalent(record.value_iterated_to())
-                                as f64;
-                        let count = record.count_since_last_iteration();
-                        (count, val)
-                    }),
-            )
-        }
+    /// iter recorded median equivalent
+    ///
+    /// like 1 but with count_since_last_iteration
+    pub fn iter_recorded_median_equivalent_cnt_last_it(
+        &self,
+    ) -> Box<dyn Iterator<Item = (u64, f64)> + '_> {
+        Box::new(
+            self.integer_values_histogram
+                .iter_recorded()
+                .map(move |record| {
+                    let val = self.integer_to_double_value_conversion_ratio
+                        * self
+                            .integer_values_histogram
+                            .median_equivalent(record.value_iterated_to())
+                            as f64;
+                    let count = record.count_since_last_iteration();
+                    (count, val)
+                }),
+        )
+    }
 
     /// reset hist
     pub fn reset(&mut self) {
@@ -586,7 +588,7 @@ mod test {
         h.record(10.0).unwrap();
         assert_eq!(h.len(), 2);
         assert_eq!(h.min(), 10.0);
-        assert_eq!(h.max(), 20.0);
+        assert_near!(h.max(), 20.0, 0.001);
         assert_near!(h.mean(), 15.0, 0.001);
     }
     #[test]
