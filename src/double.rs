@@ -76,8 +76,8 @@ impl<C: Counter> DoubleHistogram<C> {
     pub fn new_with_bounds(low: f64, high: f64, sigfig: u8) -> Result<Self, CreationError> {
         Self::new_with_args((high / low).ceil() as u64, low, high, sigfig)
     }
-
-    fn auto(&mut self, enabled: bool) {
+    /// Set auto-resizing
+    pub fn auto(&mut self, enabled: bool) {
         self.integer_values_histogram.auto(enabled);
     }
     fn init(&mut self) {
