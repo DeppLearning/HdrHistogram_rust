@@ -38,11 +38,11 @@ impl<C: Counter> DoubleHistogram<C> {
             return Err(CreationError::UsizeTypeTooSmall);
         }
 
-        //let mut highest_allowed_value_ever = 1.0;
-        //while highest_allowed_value_ever < std::f64::MAX / 4.0 {
-        //    highest_allowed_value_ever *= 2.0;
-        //}
-        let highest_allowed_value_ever = current_highest_value_limit_in_auto_range; //2.0_f64.powi(61);
+        // let mut highest_allowed_value_ever = 1.0;
+        // while highest_allowed_value_ever < std::f64::MAX / 4.0 {
+        //     highest_allowed_value_ever *= 2.0;
+        // }
+        let highest_allowed_value_ever = std::f64::MAX / 4.0;
         let integer_value_range =
             Self::derive_integer_value_range(configured_highest_to_lowest_value_ratio, sigfig);
         let integer_values_histogram =
@@ -56,7 +56,7 @@ impl<C: Counter> DoubleHistogram<C> {
             integer_to_double_value_conversion_ratio: 1.0,
             double_to_integer_value_conversion_ratio: 1.0,
         };
-      //  hist.init();
+        hist.init();
         Ok(hist)
     }
 
@@ -88,7 +88,7 @@ impl<C: Counter> DoubleHistogram<C> {
         // accommodate them (forcing a force-shift for the higher values would achieve the opposite).
         // We will therefore start with a very high value range, and let the recordings autoAdjust
         // downwards from there:
-        let lowest_trackable_unit_value = 1.0; //2.0_f64.powi(800).min(self.current_highest_value_limit_in_auto_range);
+        let lowest_trackable_unit_value = 2.0_f64.powi(800).min(self.current_highest_value_limit_in_auto_range);
 
         let internal_highest_to_lowest_value_ratio =
            Self::derive_internal_highest_to_lowest_value_ratio(
