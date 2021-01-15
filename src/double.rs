@@ -211,6 +211,39 @@ impl<C: Counter> DoubleHistogram<C> {
         }
     }
 
+    /// record w count
+    pub fn record_n2(&mut self, value: f64, count: C) -> Result<(), RecordError> {
+        let mut throw_count = 0;
+        loop {
+            if (value < self.current_lowest_value_in_auto_range)
+                || (value >= self.current_highest_value_limit_in_auto_range)
+            {
+                // Zero is valid and needs no auto-ranging, but also rare enough that we should deal
+                // with it on the slow path...
+                self.auto_adjust_range_for_value(value)?;
+            }
+
+            if self
+                .record_converted_double_value_with_count2(value, count)
+                .is_ok()
+            {
+                return Ok(());
+            }
+            // A race that would pass the auto-range check above and would still take an AIOOB
+            // can only occur due to a value that would have been valid becoming invalid due
+            // to a concurrent adjustment operation. Such adjustment operations can happen no
+            // more than 64 times in the entire lifetime of the Histogram, which makes it safe
+            // to retry with no fear of live-locking.
+
+            throw_count += 1;
+            if throw_count > 1 {
+                // For the retry check to not detect an out of range attempt after 64 retries
+                // should be  theoretically impossible, and would indicate a bug.
+                panic!("BUG: Unexpected non-transient AIOOB Exception caused");
+            }
+        }
+    }
+
     fn record_converted_double_value_with_count(
         &mut self,
         value: f64,
@@ -218,6 +251,15 @@ impl<C: Counter> DoubleHistogram<C> {
     ) -> Result<(), RecordError> {
         let integer_value = (value * self.double_to_integer_value_conversion_ratio).trunc() as u64;
         self.integer_values_histogram.record_n(integer_value, count)
+    }
+
+    fn record_converted_double_value_with_count2(
+        &mut self,
+        value: f64,
+        count: C,
+    ) -> Result<(), RecordError> {
+        let integer_value = (value * self.double_to_integer_value_conversion_ratio).trunc() as u64;
+        self.integer_values_histogram.record_n_inner2(integer_value, count, true)
     }
 
     fn auto_adjust_range_for_value(&mut self, value: f64) -> Result<(), RecordError> {
@@ -451,21 +493,22 @@ impl<C: Counter> DoubleHistogram<C> {
         &mut self,
         subtrahend: B,
     ) -> Result<(), SubtractionError> {
-        // let array_length = other.integer_values_histogram.counts.len();
-        // for i in 0..array_length {
-        //     let count = other.integer_values_histogram.count_at_index(i).unwrap();
-        //     if count > C::zero() {
-        //         let value = other.integer_values_histogram.value_for(i) as f64 * other.integer_to_double_value_conversion_ratio;
-        //         if self.get_count_at_value(value) < count {
-        //             return Err(SubtractionError::SubtrahendCountExceedsMinuendCount)
-        //         }
-        //         self.integer_values_histogram.
-        //         self.record_value_with_count(value, -count);
-        //     }
-        // }
+        let subtrahend = subtrahend.borrow();
+        let array_length = subtrahend.integer_values_histogram.counts.len();
+        for i in 0..array_length {
+            let count = subtrahend.integer_values_histogram.count_at_normalized_index(i).unwrap();
+            if count > C::zero() {
+                let value = subtrahend.integer_values_histogram.value_for(i) as f64 * subtrahend.integer_to_double_value_conversion_ratio;
+                if self.count_at(value) < count {
+                    return Err(SubtractionError::SubtrahendCountExceedsMinuendCount)
+                }
+                self.record_n2(value, count).unwrap();
+            }
+        }
+        Ok(())
         // TODO enough or need to adjust current_highest/lowest? java impl records negative values (see above)
-        self.integer_values_histogram
-            .subtract(&subtrahend.borrow().integer_values_histogram)
+        // self.integer_values_histogram
+        //     .subtract(&subtrahend.borrow().integer_values_histogram)
     }
     /// max
     pub fn max(&self) -> f64 {
@@ -583,7 +626,7 @@ mod test {
         assert_near!(h.mean(), 20.0, 0.001);
         h.record(10.0).unwrap();
         assert_eq!(h.len(), 2);
-        assert_eq!(h.min(), 10.0);
+        assert_near!(h.min(), 10.0, 0.001);
         assert_near!(h.max(), 20.0, 0.001);
         assert_near!(h.mean(), 15.0, 0.001);
     }
@@ -600,6 +643,7 @@ mod test {
         h.add(&h3).unwrap();
         assert_near!(h.mean(), 16.671875, 0.001);
         h.subtract(&h3).unwrap();
+        dbg!(h.mean(), h.len());
         assert_near!(h.mean(), 20.0, 0.001);
     }
 
@@ -668,5 +712,24 @@ mod test {
         assert_eq!(merged.len(), h1.len() + h2.len() + h3.len());
         assert_near!(merged.min(), 1.0, 0.01);
         assert_near!(merged.max(), 10.0, 0.01);
+    }
+
+    #[test]
+    fn test_iter() {
+        let mut h1 = dhisto64(1.0, TRACKABLE_VALUE_RANGE, 3);
+        h1.auto(true);
+        (1..10000000).into_iter().rev().for_each(|i| h1.record( i as f64).unwrap());
+
+
+    }
+
+    #[test]
+    fn test_iter2() {
+        let mut h1 = dhisto64(1.0, 100000000000.0, 2);
+        h1.record(1.0).unwrap();
+        h1.record(100.0).unwrap();
+        h1.record(1000000.0).unwrap();
+        h1.record(1000000000.0).unwrap();
+
     }
 }

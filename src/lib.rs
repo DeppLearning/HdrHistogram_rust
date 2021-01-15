@@ -909,6 +909,52 @@ impl<T: Counter> Histogram<T> {
         Ok(())
     }
 
+    fn record_n_inner2(&mut self, mut value: u64, count: T, clamp: bool) -> Result<(), RecordError> {
+        let recorded_without_resize = if let Some(c) = self.mut_at(value) {
+            *c = (*c).saturating_sub(count);
+            true
+        } else {
+            false
+        };
+
+        if !recorded_without_resize {
+            if clamp {
+                value = if value > self.highest_trackable_value {
+                    self.highest_trackable_value
+                } else {
+                    // must be smaller than the lowest_discernible_value, since self.mut_at(value)
+                    // failed, and it's not too large (per above).
+                    self.lowest_discernible_value
+                };
+
+                let c = self
+                    .mut_at(value)
+                    .expect("unwrap must succeed since low and high are always representable");
+                *c = c.saturating_sub(count);
+            } else if !self.auto_resize {
+                return Err(RecordError::ValueOutOfRangeResizeDisabled);
+            } else {
+                // We're growing the histogram, so new high > old high and is therefore >= 2x low.
+                self.resize(value)
+                    .map_err(|_| RecordError::ResizeFailedUsizeTypeTooSmall)?;
+                self.highest_trackable_value =
+                    self.highest_equivalent(self.value_for(self.last_index()));
+
+                {
+                    let c = self.mut_at(value).expect("value should fit after resize");
+                    // after resize, should be no possibility of overflow because this is a new slot
+                    *c = (*c)
+                        .checked_sub(&count)
+                        .expect("count overflow after resize");
+                }
+            }
+        }
+
+        self.update_min_max(value);
+        self.total_count = self.total_count.saturating_sub(count.as_u64());
+        Ok(())
+    }
+
     /// Record a value in the histogram while correcting for coordinated omission.
     ///
     /// See `record_n_correct` for further documentation.
@@ -1718,7 +1764,7 @@ impl<T: Counter> Histogram<T> {
         assert!(length_to_scan <= self.counts.len());
         for i in 0..length_to_scan {
             // Direct indexing safe because of assert above
-            let count = self.counts[i];
+            let count = self.counts[self.normalize_index(i).unwrap()];
             if count != T::zero() {
                 restat_state.on_nonzero_count(i, count);
             }
