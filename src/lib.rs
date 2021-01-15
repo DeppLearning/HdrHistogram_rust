@@ -1718,7 +1718,7 @@ impl<T: Counter> Histogram<T> {
         assert!(length_to_scan <= self.counts.len());
         for i in 0..length_to_scan {
             // Direct indexing safe because of assert above
-            let count = self.counts[self.normalize_index(i).unwrap()];
+            let count = self.counts[i];
             if count != T::zero() {
                 restat_state.on_nonzero_count(i, count);
             }
