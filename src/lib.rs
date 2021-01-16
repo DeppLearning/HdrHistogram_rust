@@ -633,6 +633,67 @@ impl<T: Counter> Histogram<T> {
         Ok(())
     }
 
+    /// Subtract value with count from this histogram.
+    ///
+    /// See `SubtractionError` for error conditions.
+    pub fn subtract_n(
+        &mut self,
+        other_value: u64,
+        other_count: T
+    ) -> Result<(), SubtractionError> {
+
+        // make sure we can take the values in source
+        let top = self.highest_equivalent(self.value_for(self.last_index()));
+        if top < self.highest_equivalent(other_value) {
+            return Err(SubtractionError::SubtrahendValueExceedsMinuendRange);
+        }
+
+        let old_min_highest_equiv = self.highest_equivalent(self.min());
+        let old_max_lowest_equiv = self.lowest_equivalent(self.max());
+
+        // If total_count is at the max value, it may have saturated, so we must restat
+        let mut needs_restat = self.total_count == u64::max_value();
+            if other_count != T::zero() {
+                {
+                    let mut_count = self.mut_at(other_value);
+
+                    if let Some(c) = mut_count {
+                        // TODO Perhaps we should saturating sub here? Or expose some form of
+                        // pluggability so users could choose to error or saturate? Both seem
+                        // useful. It's also sort of inconsistent with overflow, which now
+                        // saturates.
+                        *c = (*c)
+                            .checked_sub(&other_count)
+                            .ok_or(SubtractionError::SubtrahendCountExceedsMinuendCount)?;
+                    } else {
+                        panic!("Tried to subtract value outside of range: {}", other_value);
+                    }
+                }
+
+                // we might have just set the min / max to have zero count.
+                if other_value <= old_min_highest_equiv || other_value >= old_max_lowest_equiv {
+                    needs_restat = true;
+                }
+
+                if !needs_restat {
+                    // if we're not already going to recalculate everything, subtract from
+                    // total_count
+                    self.total_count = self
+                        .total_count
+                        .checked_sub(other_count.as_u64())
+                        .expect("total count underflow on subtraction");
+                }
+            }
+
+        if needs_restat {
+            let l = self.distinct_values();
+            self.restat(l);
+        }
+
+        Ok(())
+    }
+
+
     // ********************************************************************************************
     // Setters and resetters.
     // ********************************************************************************************
