@@ -496,7 +496,7 @@ impl<C: Counter> DoubleHistogram<C> {
         let subtrahend = subtrahend.borrow();
         let array_length = subtrahend.integer_values_histogram.counts.len();
         for i in 0..array_length {
-            let count = subtrahend.integer_values_histogram.count_at_normalized_index(i).unwrap();
+            let count = subtrahend.integer_values_histogram.count_at_index(i).unwrap();
             if count > C::zero() {
                 let value = subtrahend.integer_values_histogram.value_for(i) as f64 * subtrahend.integer_to_double_value_conversion_ratio * self.double_to_integer_value_conversion_ratio;
                 self.integer_values_histogram.subtract_n(value.trunc() as u64, count)?
