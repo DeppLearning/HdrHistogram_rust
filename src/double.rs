@@ -6,6 +6,7 @@ use crate::{
 };
 
 use std::{borrow::Borrow, f64::consts::LN_2};
+use std::ops::{AddAssign, SubAssign};
 
 /// DoubleHistogram
 #[derive(Clone, Debug)]
@@ -540,11 +541,8 @@ impl<C: Counter> DoubleHistogram<C> {
             self.integer_values_histogram
                 .iter_recorded()
                 .map(move |record| {
-                    let val = self.integer_to_double_value_conversion_ratio
-                        * self
-                            .integer_values_histogram
-                            .median_equivalent(record.value_iterated_to())
-                            as f64;
+                    let val = self
+                            .median_equivalent(record.value_iterated_to().as_f64() * self.integer_to_double_value_conversion_ratio);
                     let count = record.count_at_value();
                     (count, val)
                 }),
@@ -561,11 +559,7 @@ impl<C: Counter> DoubleHistogram<C> {
             self.integer_values_histogram
                 .iter_recorded()
                 .map(move |record| {
-                    let val = self.integer_to_double_value_conversion_ratio
-                        * self
-                            .integer_values_histogram
-                            .median_equivalent(record.value_iterated_to())
-                            as f64;
+                    let val = self.median_equivalent(record.value_iterated_to().as_f64() * self.integer_to_double_value_conversion_ratio);
                     let count = record.count_since_last_iteration();
                     (count, val)
                 }),
@@ -588,6 +582,68 @@ impl<C: Counter> DoubleHistogram<C> {
             * self.integer_to_double_value_conversion_ratio
     }
 }
+
+
+// make it more ergonomic to add and subtract DoubleHistograms
+impl<'a, T: Counter> AddAssign<&'a DoubleHistogram<T>> for DoubleHistogram<T> {
+    fn add_assign(&mut self, source: &'a DoubleHistogram<T>) {
+        self.add(source).unwrap();
+    }
+}
+
+impl<T: Counter> AddAssign<DoubleHistogram<T>> for DoubleHistogram<T> {
+    fn add_assign(&mut self, source: DoubleHistogram<T>) {
+        self.add(&source).unwrap();
+    }
+}
+
+use std::iter;
+impl<T: Counter> iter::Sum for DoubleHistogram<T> {
+    fn sum<I>(mut iter: I) -> Self
+    where
+        I: Iterator<Item = Self>,
+    {
+        match iter.next() {
+            Some(mut first) => {
+                for h in iter {
+                    first += h;
+                }
+                first
+            }
+            None => DoubleHistogram::new(3).expect("DoubleHistograms with sigfig=3 should always work"),
+        }
+    }
+}
+
+impl<'a, T: Counter> SubAssign<&'a DoubleHistogram<T>> for DoubleHistogram<T> {
+    fn sub_assign(&mut self, other: &'a DoubleHistogram<T>) {
+        self.subtract(other).unwrap();
+    }
+}
+
+impl<T: Counter> SubAssign<DoubleHistogram<T>> for DoubleHistogram<T> {
+    fn sub_assign(&mut self, source: DoubleHistogram<T>) {
+        self.subtract(&source).unwrap();
+    }
+}
+
+// make it more ergonomic to record samples
+impl<T: Counter> AddAssign<f64> for DoubleHistogram<T> {
+    fn add_assign(&mut self, value: f64) {
+        self.record(value).unwrap();
+    }
+}
+
+// allow comparing DoubleHistograms
+impl<T: Counter, F: Counter> PartialEq<DoubleHistogram<F>> for DoubleHistogram<T>
+where
+    T: PartialEq<F>,
+{
+    fn eq(&self, other: &DoubleHistogram<F>) -> bool {
+        todo!();
+    }
+}
+
 
 #[cfg(test)]
 mod test {
