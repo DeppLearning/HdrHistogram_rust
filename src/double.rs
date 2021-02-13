@@ -190,12 +190,12 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
     ///
     /// Returns an error if `value` exceeds the highest trackable value and auto-resize is
     /// disabled.
-    pub fn record(&mut self, value: F) -> Result<(), RecordError>  {
+    pub fn record(&mut self, value: F) -> Result<(), RecordError> {
         self.record_n(value, C::one())
     }
 
     /// record w count
-    pub fn record_n(&mut self, value: F, count: C) -> Result<(), RecordError>  {
+    pub fn record_n(&mut self, value: F, count: C) -> Result<(), RecordError> {
         let mut throw_count = 0;
         loop {
             if (value < self.current_lowest_value_in_auto_range)
@@ -344,7 +344,7 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
     fn shift_covered_range_to_the_left(
         &mut self,
         number_of_binary_orders_of_magnitude: u8,
-    ) -> Result<(), RecordError>  {
+    ) -> Result<(), RecordError> {
         // We are going to adjust the tracked range by effectively shifting it to the right
         // (in the integer shift sense).
         //
@@ -366,7 +366,8 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
         // adjustment (which is synchronized and will wait behind this one). This ensures that we will
         // not end up with any concurrently recorded values that would need to be discarded if the shift
         // fails. If this shift succeeds, the pending adjustment attempt will end up doing nothing.
-        self.current_lowest_value_in_auto_range = self.current_lowest_value_in_auto_range * shift_multiplier;
+        self.current_lowest_value_in_auto_range =
+            self.current_lowest_value_in_auto_range * shift_multiplier;
 
         // First shift the values, to give the shift a chance to fail:
 
@@ -391,12 +392,14 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
                 new_lowest_value_in_auto_range = new_lowest_value_in_auto_range / shift_multiplier;
             } else {
                 new_lowest_value_in_auto_range = new_lowest_value_in_auto_range * shift_multiplier;
-                new_highest_value_limit_in_auto_range = new_highest_value_limit_in_auto_range * shift_multiplier;
+                new_highest_value_limit_in_auto_range =
+                    new_highest_value_limit_in_auto_range * shift_multiplier;
             }
         }
         // Shift was successful. Adjust new range to reflect:
         new_lowest_value_in_auto_range = new_lowest_value_in_auto_range * shift_multiplier;
-        new_highest_value_limit_in_auto_range = new_highest_value_limit_in_auto_range * shift_multiplier;
+        new_highest_value_limit_in_auto_range =
+            new_highest_value_limit_in_auto_range * shift_multiplier;
         // Set the new range to either the successfully changed one, or the original one:
         self.set_trackable_value_range(
             new_lowest_value_in_auto_range,
@@ -408,7 +411,7 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
     fn shift_covered_range_to_the_right(
         &mut self,
         number_of_binary_orders_of_magnitude: u8,
-    ) -> Result<(), RecordError>  {
+    ) -> Result<(), RecordError> {
         // We are going to adjust the tracked range by effectively shifting it to the right
         // (in the integer shift sense).
         //
@@ -429,7 +432,8 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
         // adjustment (which is synchronized and will wait behind this one). This ensures that we will
         // not end up with any concurrently recorded values that would need to be discarded if the shift
         // fails. If this shift succeeds, the pending adjustment attempt will end up doing nothing.
-        self.current_highest_value_limit_in_auto_range = self.current_highest_value_limit_in_auto_range * shift_multiplier;
+        self.current_highest_value_limit_in_auto_range =
+            self.current_highest_value_limit_in_auto_range * shift_multiplier;
 
         // First shift the values, to give the shift a chance to fail:
         // Shift integer histogram left, increasing the recorded integer values for current recordings
@@ -448,13 +452,15 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
                 .is_err()
             {
                 self.handle_shift_values_error(number_of_binary_orders_of_magnitude)?;
-                new_highest_value_limit_in_auto_range = new_highest_value_limit_in_auto_range / shift_multiplier;
+                new_highest_value_limit_in_auto_range =
+                    new_highest_value_limit_in_auto_range / shift_multiplier;
                 self.integer_values_histogram
                     .shift_values_left(number_of_binary_orders_of_magnitude)?;
             }
         }
         new_lowest_value_in_auto_range = new_lowest_value_in_auto_range * shift_multiplier;
-        new_highest_value_limit_in_auto_range = new_highest_value_limit_in_auto_range * shift_multiplier;
+        new_highest_value_limit_in_auto_range =
+            new_highest_value_limit_in_auto_range * shift_multiplier;
         self.set_trackable_value_range(
             new_lowest_value_in_auto_range,
             new_highest_value_limit_in_auto_range,
@@ -509,7 +515,7 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
     pub fn add<B: Borrow<DoubleHistogram<C, F>>>(
         &mut self,
         source: B,
-    ) -> Result<(), AdditionError>  {
+    ) -> Result<(), AdditionError> {
         let other = source.borrow();
         let array_length = other.integer_values_histogram.counts.len();
         for i in 0..array_length {
@@ -568,10 +574,34 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
                     * subtrahend.integer_to_double_value_conversion_ratio
                     * self.double_to_integer_value_conversion_ratio;
                 let mut value = value.trunc().to_u64().unwrap();
-                value = value.clamp(self.integer_values_histogram.min(), self.integer_values_histogram.max());
-                value = self.integer_values_histogram.median_equivalent(value);
+                value = value.clamp(
+                    self.integer_values_histogram.min(),
+                    self.integer_values_histogram.max(),
+                );
                 self.integer_values_histogram
-                    .subtract_n(value, count)?
+                    .subtract_n(value, count)
+                    .or_else(|e| match e {
+                        SubtractionError::SubtrahendCountExceedsMinuendCount => {
+                            let closest_value = self
+                                .integer_values_histogram
+                                .iter_recorded()
+                                .filter_map(|rec| {
+                                    let val = self
+                                        .integer_values_histogram
+                                        .median_equivalent(rec.value_iterated_to());
+                                    if val <= value {
+                                        Some(val)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .last()
+                                .unwrap();
+                            self.integer_values_histogram
+                                .subtract_n(closest_value, count)
+                        }
+                        _ => Err(e),
+                    })?
             }
         }
         Ok(())
@@ -667,17 +697,13 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
 }
 
 // make it more ergonomic to add and subtract DoubleHistograms
-impl<'a, T: Counter, F: Float> AddAssign<&'a DoubleHistogram<T, F>>
-    for DoubleHistogram<T, F>
-{
+impl<'a, T: Counter, F: Float> AddAssign<&'a DoubleHistogram<T, F>> for DoubleHistogram<T, F> {
     fn add_assign(&mut self, source: &'a DoubleHistogram<T, F>) {
         self.add(source).unwrap();
     }
 }
 
-impl<T: Counter, F: Float> AddAssign<DoubleHistogram<T, F>>
-    for DoubleHistogram<T, F>
-{
+impl<T: Counter, F: Float> AddAssign<DoubleHistogram<T, F>> for DoubleHistogram<T, F> {
     fn add_assign(&mut self, source: DoubleHistogram<T, F>) {
         self.add(&source).unwrap();
     }
@@ -703,17 +729,13 @@ impl<T: Counter, F: Float> iter::Sum for DoubleHistogram<T, F> {
     }
 }
 
-impl<'a, T: Counter, F: Float> SubAssign<&'a DoubleHistogram<T, F>>
-    for DoubleHistogram<T, F>
-{
+impl<'a, T: Counter, F: Float> SubAssign<&'a DoubleHistogram<T, F>> for DoubleHistogram<T, F> {
     fn sub_assign(&mut self, other: &'a DoubleHistogram<T, F>) {
         self.subtract(other).unwrap();
     }
 }
 
-impl<T: Counter, F: Float> SubAssign<DoubleHistogram<T, F>>
-    for DoubleHistogram<T, F>
-{
+impl<T: Counter, F: Float> SubAssign<DoubleHistogram<T, F>> for DoubleHistogram<T, F> {
     fn sub_assign(&mut self, source: DoubleHistogram<T, F>) {
         self.subtract(&source).unwrap();
     }
