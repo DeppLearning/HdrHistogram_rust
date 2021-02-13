@@ -709,6 +709,7 @@ impl<T: Counter> Histogram<T> {
         let mut needs_restat = self.total_count == u64::max_value();
         if other_count != T::zero() {
             let res = {
+                
                 let mut_count = self.mut_at(other_value);
 
                 if let Some(c) = mut_count {
@@ -732,7 +733,16 @@ impl<T: Counter> Histogram<T> {
             if let Err(e) = res {
                 let mut rest_count = other_count;
                 let i = self.index_for(other_value).unwrap();
-                let i_org = self.normalize_index(i).unwrap();
+                let mut i_org = self.normalize_index(i).unwrap();
+                if i_org > 1 && i < (self.counts.len()-2) {
+                    let left_neighbour = self.value_for(i_org-1);
+                    let right_neighbour = self.value_for(i_org+1);
+                    let left_diff = other_value - left_neighbour;
+                    let right_diff = right_neighbour - other_value;
+                    if right_diff < left_diff {
+                        i_org = i_org + 1;
+                    }
+                }
                 let mut i = i_org;
                 while i > 0 && rest_count > T::zero() {
                     let cur_count = self.counts.get_mut(i).unwrap();
