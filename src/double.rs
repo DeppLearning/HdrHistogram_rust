@@ -550,6 +550,31 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
         // self.integer_values_histogram
         //     .subtract(&subtrahend.borrow().integer_values_histogram)
     }
+
+    /// sub
+    pub fn saturating_subtract<B: Borrow<DoubleHistogram<C, F>>>(
+        &mut self,
+        subtrahend: B,
+    ) -> Result<(), SubtractionError> {
+        let subtrahend = subtrahend.borrow();
+        let array_length = subtrahend.integer_values_histogram.counts.len();
+        for i in 0..array_length {
+            let count = subtrahend
+                .integer_values_histogram
+                .count_at_index(i)
+                .unwrap();
+            if count > C::zero() {
+                let value = F::from(subtrahend.integer_values_histogram.value_for(i)).unwrap()
+                    * subtrahend.integer_to_double_value_conversion_ratio
+                    * self.double_to_integer_value_conversion_ratio;
+                let mut value = value.trunc().to_u64().unwrap();
+                value = value.clamp(self.integer_values_histogram.min(), self.integer_values_histogram.max());
+                self.integer_values_histogram
+                    .subtract_n(value, count)?
+            }
+        }
+        Ok(())
+    }
     /// max
     pub fn max(&self) -> F {
         F::from(self.integer_values_histogram.max()).unwrap()
