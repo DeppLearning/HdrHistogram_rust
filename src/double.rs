@@ -569,6 +569,7 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
                     * self.double_to_integer_value_conversion_ratio;
                 let mut value = value.trunc().to_u64().unwrap();
                 value = value.clamp(self.integer_values_histogram.min(), self.integer_values_histogram.max());
+                value = self.integer_values_histogram.median_equivalent(value);
                 self.integer_values_histogram
                     .subtract_n(value, count)?
             }
