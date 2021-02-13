@@ -737,8 +737,8 @@ impl<T: Counter> Histogram<T> {
                 while i > 0 && rest_count > T::zero() {
                     let cur_count = self.counts.get_mut(i).unwrap();
                     if rest_count > *cur_count {
-                        *cur_count = T::zero();
                         rest_count = rest_count - *cur_count;
+                        *cur_count = T::zero();
                     } else {
                         *cur_count = *cur_count - rest_count;
                         rest_count = T::zero();
@@ -750,8 +750,8 @@ impl<T: Counter> Histogram<T> {
                     while i < self.counts.len() && rest_count > T::zero() {
                         let cur_count = self.counts.get_mut(i).unwrap();
                         if rest_count > *cur_count {
-                            *cur_count = T::zero();
                             rest_count = rest_count - *cur_count;
+                            *cur_count = T::zero();
                         } else {
                             *cur_count = *cur_count - rest_count;
                             rest_count = T::zero();
