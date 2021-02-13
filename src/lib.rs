@@ -734,7 +734,7 @@ impl<T: Counter> Histogram<T> {
                 let mut rest_count = other_count;
                 let i = self.index_for(other_value).unwrap();
                 let mut i_org = self.normalize_index(i).unwrap();
-                if i_org > 1 && i < (self.counts.len()-2) {
+                if i_org > 1 && i_org < (self.counts.len()-2) {
                     let left_neighbour = self.value_for(i_org-1);
                     let right_neighbour = self.value_for(i_org+1);
                     let left_diff = other_value - left_neighbour;
