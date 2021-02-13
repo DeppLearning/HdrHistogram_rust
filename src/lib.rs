@@ -636,12 +636,7 @@ impl<T: Counter> Histogram<T> {
     /// Subtract value with count from this histogram.
     ///
     /// See `SubtractionError` for error conditions.
-    pub fn subtract_n(
-        &mut self,
-        other_value: u64,
-        other_count: T
-    ) -> Result<(), SubtractionError> {
-
+    pub fn subtract_n(&mut self, other_value: u64, other_count: T) -> Result<(), SubtractionError> {
         // make sure we can take the values in source
         let top = self.highest_equivalent(self.value_for(self.last_index()));
         if top < self.highest_equivalent(other_value) {
@@ -653,37 +648,37 @@ impl<T: Counter> Histogram<T> {
 
         // If total_count is at the max value, it may have saturated, so we must restat
         let mut needs_restat = self.total_count == u64::max_value();
-            if other_count != T::zero() {
-                {
-                    let mut_count = self.mut_at(other_value);
+        if other_count != T::zero() {
+            {
+                let mut_count = self.mut_at(other_value);
 
-                    if let Some(c) = mut_count {
-                        // TODO Perhaps we should saturating sub here? Or expose some form of
-                        // pluggability so users could choose to error or saturate? Both seem
-                        // useful. It's also sort of inconsistent with overflow, which now
-                        // saturates.
-                        *c = (*c)
-                            .checked_sub(&other_count)
-                            .ok_or(SubtractionError::SubtrahendCountExceedsMinuendCount)?;
-                    } else {
-                        panic!("Tried to subtract value outside of range: {}", other_value);
-                    }
-                }
-
-                // we might have just set the min / max to have zero count.
-                if other_value <= old_min_highest_equiv || other_value >= old_max_lowest_equiv {
-                    needs_restat = true;
-                }
-
-                if !needs_restat {
-                    // if we're not already going to recalculate everything, subtract from
-                    // total_count
-                    self.total_count = self
-                        .total_count
-                        .checked_sub(other_count.as_u64())
-                        .expect("total count underflow on subtraction");
+                if let Some(c) = mut_count {
+                    // TODO Perhaps we should saturating sub here? Or expose some form of
+                    // pluggability so users could choose to error or saturate? Both seem
+                    // useful. It's also sort of inconsistent with overflow, which now
+                    // saturates.
+                    *c = (*c)
+                        .checked_sub(&other_count)
+                        .ok_or(SubtractionError::SubtrahendCountExceedsMinuendCount)?;
+                } else {
+                    panic!("Tried to subtract value outside of range: {}", other_value);
                 }
             }
+
+            // we might have just set the min / max to have zero count.
+            if other_value <= old_min_highest_equiv || other_value >= old_max_lowest_equiv {
+                needs_restat = true;
+            }
+
+            if !needs_restat {
+                // if we're not already going to recalculate everything, subtract from
+                // total_count
+                self.total_count = self
+                    .total_count
+                    .checked_sub(other_count.as_u64())
+                    .expect("total count underflow on subtraction");
+            }
+        }
 
         if needs_restat {
             let l = self.distinct_values();
@@ -698,10 +693,9 @@ impl<T: Counter> Histogram<T> {
     /// See `SubtractionError` for error conditions.
     pub fn subtract_lower_n(
         &mut self,
-        other_value: u64,
-        other_count: T
+        mut other_value: u64,
+        other_count: T,
     ) -> Result<(), SubtractionError> {
-
         // make sure we can take the values in source
         let top = self.highest_equivalent(self.value_for(self.last_index()));
         if top < self.highest_equivalent(other_value) {
@@ -713,64 +707,63 @@ impl<T: Counter> Histogram<T> {
 
         // If total_count is at the max value, it may have saturated, so we must restat
         let mut needs_restat = self.total_count == u64::max_value();
-            if other_count != T::zero() {
-                let res =
-                {
-                    let mut_count = self.mut_at(other_value);
+        if other_count != T::zero() {
+            let res = {
+                let mut_count = self.mut_at(other_value);
 
-                    if let Some(c) = mut_count {
-                        // TODO Perhaps we should saturating sub here? Or expose some form of
-                        // pluggability so users could choose to error or saturate? Both seem
-                        // useful. It's also sort of inconsistent with overflow, which now
-                        // saturates.
-                        let diff = (*c)
-                        .checked_sub(&other_count);
-                        match diff {
-                            None => {
-                                Err(SubtractionError::SubtrahendCountExceedsMinuendCount)
-                            },
-                            Some(diff) => {*c = diff; Ok(())}
+                if let Some(c) = mut_count {
+                    // TODO Perhaps we should saturating sub here? Or expose some form of
+                    // pluggability so users could choose to error or saturate? Both seem
+                    // useful. It's also sort of inconsistent with overflow, which now
+                    // saturates.
+                    let diff = (*c).checked_sub(&other_count);
+                    match diff {
+                        None => Err(SubtractionError::SubtrahendCountExceedsMinuendCount),
+                        Some(diff) => {
+                            *c = diff;
+                            Ok(())
                         }
-  
+                    }
+                } else {
+                    panic!("Tried to subtract value outside of range: {}", other_value);
+                }
+            };
+            // if the normal subtract failed, try subtracting from bins with smaller values
+            if let Err(e) = res {
+                let mut rest_count = other_count;
+                let i = self.index_for(other_value).unwrap();
+                let mut i = self.normalize_index(i).unwrap();
+                while i > 0 && rest_count > T::zero() {
+                    let cur_count = self.counts.get_mut(i).unwrap();
+                    if rest_count > *cur_count {
+                        *cur_count = T::zero();
+                        rest_count = rest_count - *cur_count;
                     } else {
-                        panic!("Tried to subtract value outside of range: {}", other_value);
+                        *cur_count = *cur_count - rest_count;
+                        rest_count = T::zero();
                     }
-                };
-                // if the normal subtract failed, try subtracting from bins with smaller values
-                if let Err(e) = res {
-                    let mut rest_count = other_count;
-                    let i = self.index_for(other_value).unwrap();
-                    let mut i = self.normalize_index(i).unwrap();
-                    while i > 0 && rest_count > T::zero() {
-                        let cur_count = self.counts.get_mut(i).unwrap();
-                        if rest_count > *cur_count {
-                            *cur_count = T::zero();
-                            rest_count = rest_count - *cur_count;
-                        } else {
-                            *cur_count = *cur_count - rest_count;
-                            rest_count = T::zero();
-                        }
-                        i -= 1;
-                    }
-                    if rest_count > T::zero() {
-                        return Err(e);
-                    }
+                    i -= 1;
                 }
-
-                // we might have just set the min / max to have zero count.
-                if other_value <= old_min_highest_equiv || other_value >= old_max_lowest_equiv {
-                    needs_restat = true;
+                if rest_count > T::zero() {
+                    return Err(e);
                 }
-
-                if !needs_restat {
-                    // if we're not already going to recalculate everything, subtract from
-                    // total_count
-                    self.total_count = self
-                        .total_count
-                        .checked_sub(other_count.as_u64())
-                        .expect("total count underflow on subtraction");
-                }
+                needs_restat = true;
             }
+
+            // we might have just set the min / max to have zero count.
+            if other_value <= old_min_highest_equiv || other_value >= old_max_lowest_equiv {
+                needs_restat = true;
+            }
+
+            if !needs_restat {
+                // if we're not already going to recalculate everything, subtract from
+                // total_count
+                self.total_count = self
+                    .total_count
+                    .checked_sub(other_count.as_u64())
+                    .expect("total count underflow on subtraction");
+            }
+        }
 
         if needs_restat {
             let l = self.distinct_values();
@@ -779,7 +772,6 @@ impl<T: Counter> Histogram<T> {
 
         Ok(())
     }
-
 
     // ********************************************************************************************
     // Setters and resetters.
@@ -1057,7 +1049,12 @@ impl<T: Counter> Histogram<T> {
         Ok(())
     }
 
-    fn record_n_inner2(&mut self, mut value: u64, count: T, clamp: bool) -> Result<(), RecordError> {
+    fn record_n_inner2(
+        &mut self,
+        mut value: u64,
+        count: T,
+        clamp: bool,
+    ) -> Result<(), RecordError> {
         let recorded_without_resize = if let Some(c) = self.mut_at(value) {
             *c = (*c).saturating_sub(count);
             true
