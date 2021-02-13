@@ -557,7 +557,7 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
         //     .subtract(&subtrahend.borrow().integer_values_histogram)
     }
 
-    /// sub
+    /// subtract counts from subtrahend from self. if value from subtrahend is not present in self, try to subtract from lower values.
     pub fn saturating_subtract<B: Borrow<DoubleHistogram<C, F>>>(
         &mut self,
         subtrahend: B,
@@ -579,29 +579,7 @@ impl<C: Counter, F: Float> DoubleHistogram<C, F> {
                     self.integer_values_histogram.max(),
                 );
                 self.integer_values_histogram
-                    .subtract_n(value, count)
-                    .or_else(|e| match e {
-                        SubtractionError::SubtrahendCountExceedsMinuendCount => {
-                            let closest_value = self
-                                .integer_values_histogram
-                                .iter_recorded()
-                                .filter_map(|rec| {
-                                    let val = self
-                                        .integer_values_histogram
-                                        .median_equivalent(rec.value_iterated_to());
-                                    if val <= value {
-                                        Some(val)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .last()
-                                .unwrap();
-                            self.integer_values_histogram
-                                .subtract_n(closest_value, count)
-                        }
-                        _ => Err(e),
-                    })?
+                    .subtract_lower_n(value, count)?
             }
         }
         Ok(())
