@@ -732,7 +732,8 @@ impl<T: Counter> Histogram<T> {
             if let Err(e) = res {
                 let mut rest_count = other_count;
                 let i = self.index_for(other_value).unwrap();
-                let mut i = self.normalize_index(i).unwrap();
+                let i_org = self.normalize_index(i).unwrap();
+                let mut i = i_org;
                 while i > 0 && rest_count > T::zero() {
                     let cur_count = self.counts.get_mut(i).unwrap();
                     if rest_count > *cur_count {
@@ -744,8 +745,22 @@ impl<T: Counter> Histogram<T> {
                     }
                     i -= 1;
                 }
+                let mut i = i_org;
                 if rest_count > T::zero() {
+                    while i < self.counts.len() && rest_count > T::zero() {
+                        let cur_count = self.counts.get_mut(i).unwrap();
+                        if rest_count > *cur_count {
+                            *cur_count = T::zero();
+                            rest_count = rest_count - *cur_count;
+                        } else {
+                            *cur_count = *cur_count - rest_count;
+                            rest_count = T::zero();
+                        }
+                        i += 1;
+                    }
+                    if rest_count > T::zero() {
                     return Err(e);
+                    }
                 }
                 needs_restat = true;
             }
