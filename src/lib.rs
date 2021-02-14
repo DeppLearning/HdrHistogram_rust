@@ -735,12 +735,14 @@ impl<T: Counter> Histogram<T> {
                 let i = self.index_for(other_value).unwrap();
                 let mut i_org = self.normalize_index(i).unwrap();
                 if i_org > 1 && i_org < (self.counts.len()-2) {
-                    let left_neighbour = self.value_for(i_org-1);
-                    let right_neighbour = self.value_for(i_org+1);
+                    let left_neighbour_i = self.last_non_non_zero_idx(i_org).unwrap();
+                    let right_neighbour_i = self.next_non_non_zero_idx(i_org).unwrap();
+                    let left_neighbour = self.value_for(left_neighbour_i);
+                    let right_neighbour = self.value_for(right_neighbour_i);
                     let left_diff = other_value - left_neighbour;
                     let right_diff = right_neighbour - other_value;
                     if right_diff < left_diff {
-                        i_org = i_org + 1;
+                        i_org = right_neighbour_i;
                     }
                 }
                 let mut i = i_org;
@@ -1679,6 +1681,14 @@ impl<T: Counter> Histogram<T> {
     pub fn next_non_equivalent(&self, value: u64) -> u64 {
         self.lowest_equivalent(value)
             .saturating_add(self.equivalent_range(value))
+    }
+    /// Get the next non_zero index
+    pub fn next_non_non_zero_idx(&self, idx: usize) -> Option<usize> {
+        self.counts.iter().enumerate().skip(idx).filter(|(_, c)| **c > T::zero()).next().map(|(i, _)| i)
+    }
+    /// Get the last non_zero index
+    pub fn last_non_non_zero_idx(&self, idx: usize) -> Option<usize> {
+        self.counts.iter().enumerate().rev().skip(self.counts.len()-idx).filter(|(_, c)| **c > T::zero()).next().map(|(i, _)| i)
     }
 
     /// Get the size (in value units) of the range of values that are equivalent to the given value
